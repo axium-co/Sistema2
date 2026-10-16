@@ -1,0 +1,1037 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MANAGER
+  USER
+  VIEWER
+}
+
+enum LeadStatus {
+  NOVO
+  CONTATADO
+  QUALIFICADO
+  CONVERTIDO
+  PERDIDO
+}
+
+enum DealStatus {
+  ABERTO
+  GANHO
+  PERDIDO
+}
+
+enum ActivityType {
+  CALL
+  MEETING
+  EMAIL
+  WHATSAPP
+  VISIT
+  NOTE
+}
+
+enum ActivityStatus {
+  PENDING
+  DONE
+  CANCELLED
+}
+
+enum EventType {
+  MEETING
+  CALL
+  VISIT
+  FOLLOWUP
+  REMINDER
+  BLOCK
+}
+
+enum EventStatus {
+  CONFIRMED
+  TENTATIVE
+  CANCELLED
+}
+
+enum AttendeeResponse {
+  PENDING
+  ACCEPTED
+  DECLINED
+}
+
+enum CardPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum BoardVisibility {
+  PRIVATE
+  TEAM
+  TENANT
+}
+
+enum FileStatus {
+  UPLOADING
+  SCANNING
+  AVAILABLE
+  QUARANTINED
+  DELETED
+}
+
+model Tenant {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  slug      String   @unique
+  planCode  String   @default("trial")
+  settings  Json     @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  users          User[]
+  teams          Team[]
+  auditLogs      AuditLog[]
+  companies      Company[]
+  contacts       Contact[]
+  leads          Lead[]
+  pipelines      Pipeline[]
+  deals          Deal[]
+  products       Product[]
+  activities     Activity[]
+  notes          Note[]
+  tags           Tag[]
+  goals          Goal[]
+  calendars      Calendar[]
+  events         Event[]
+  boards         Board[]
+  labels         Label[]
+  folders        Folder[]
+  files          File[]
+  notifications  Notification[]
+  customFields   CustomField[]
+  routines       Routine[]
+  routineRuns    RoutineRun[]
+  habits         Habit[]
+  timeBlocks     TimeBlock[]
+  focusSessions  FocusSession[]
+  invitations    Invitation[]
+
+  @@map("tenants")
+}
+
+model User {
+  id               String   @id @default(uuid()) @db.Uuid
+  tenantId         String   @map("tenant_id") @db.Uuid
+  teamId           String?  @map("team_id") @db.Uuid
+  email            String
+  passwordHash     String   @map("password_hash")
+  name             String
+  phone            String?
+  role             Role     @default(USER)
+  avatarUrl        String?  @map("avatar_url")
+  timezone         String   @default("America/Sao_Paulo")
+  locale           String   @default("pt-BR")
+  twoFactorEnabled Boolean  @default(false) @map("two_factor_enabled")
+  twoFactorSecret  String?  @map("two_factor_secret")
+  twoFactorConfirmedAt DateTime? @map("two_factor_confirmed_at")
+  notificationPrefs Json    @default("{}") @map("notification_prefs")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  deletedAt        DateTime? @map("deleted_at")
+
+  team             Team?      @relation(fields: [teamId], references: [id])
+  tenant           Tenant     @relation(fields: [tenantId], references: [id])
+  sessions         Session[]
+  auditLogs        AuditLog[] @relation("AuditActor")
+  ownedCompanies   Company[]  @relation("CompanyOwner")
+  ownedContacts    Contact[]  @relation("ContactOwner")
+  ownedLeads       Lead[]     @relation("LeadOwner")
+  ownedDeals       Deal[]     @relation("DealOwner")
+  createdActivities Activity[] @relation("ActivityCreator")
+  notes            Note[]
+  calendars        Calendar[]
+  eventsCreated    Event[]    @relation("EventCreator")
+  eventAttendees   EventAttendee[]
+  boardsCreated    Board[]    @relation("BoardCreator")
+  boardMembers     BoardMember[]
+  cardsCreated     Card[]     @relation("CardCreator")
+  cardAssignees    CardAssignee[]
+  cardComments     CardComment[]
+  folders          Folder[]   @relation("FolderCreator")
+  files            File[]
+  fileVersions     FileVersion[]
+  notifications    Notification[]
+  goals            Goal[]
+  habits           Habit[]
+  routineRuns      RoutineRun[]
+  routinesOwned    Routine[]  @relation("RoutineOwner")
+  timeBlocks       TimeBlock[]
+  focusSessions    FocusSession[]
+  invitationsSent  Invitation[] @relation("InvitationInviter")
+
+  @@unique([tenantId, email])
+  @@index([tenantId, deletedAt])
+  @@map("users")
+}
+
+model Team {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  leadId    String?  @map("lead_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id])
+  users   User[]
+  boards  Board[]
+
+  @@index([tenantId])
+  @@map("teams")
+}
+
+model Session {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  tokenHash  String   @map("token_hash")
+  device     String?
+  ip         String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  lastSeenAt DateTime @default(now()) @map("last_seen_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Invitation {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  email       String
+  name        String?
+  role        Role     @default(USER)
+  tokenHash   String   @unique @map("token_hash")
+  invitedById String?  @map("invited_by") @db.Uuid
+  expiresAt   DateTime @map("expires_at")
+  acceptedAt  DateTime? @map("accepted_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
+  invitedBy User?  @relation("InvitationInviter", fields: [invitedById], references: [id])
+
+  @@index([tenantId, email])
+  @@map("invitations")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  actorId    String?  @map("actor_id") @db.Uuid
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id") @db.Uuid
+  action     String
+  before     Json?
+  after      Json?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  actor  User?  @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@map("audit_logs")
+}
+
+model Company {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  cnpj      String?
+  phone     String?
+  website   String?
+  address   String?
+  city      String?
+  state     String?
+  notes     String?
+  ownerId   String?  @map("owner_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id])
+  owner    User?     @relation("CompanyOwner", fields: [ownerId], references: [id])
+  contacts Contact[]
+  deals    Deal[]
+  activities Activity[]
+
+  @@index([tenantId, deletedAt])
+  @@index([tenantId, name])
+  @@map("companies")
+}
+
+model Contact {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  companyId String?  @map("company_id") @db.Uuid
+  fullName  String   @map("full_name")
+  email     String?
+  phone     String?
+  whatsapp  String?
+  cpf       String?
+  jobTitle  String?  @map("job_title")
+  source    String?
+  notes     String?
+  ownerId   String?  @map("owner_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  tenant   Tenant     @relation(fields: [tenantId], references: [id])
+  company  Company?   @relation(fields: [companyId], references: [id])
+  owner    User?      @relation("ContactOwner", fields: [ownerId], references: [id])
+  leads    Lead[]
+  deals    Deal[]
+  events   EventAttendee[]
+  activities Activity[]
+
+  @@index([tenantId, deletedAt])
+  @@index([tenantId, fullName])
+  @@index([tenantId, email])
+  @@map("contacts")
+}
+
+model Lead {
+  id          String     @id @default(uuid()) @db.Uuid
+  tenantId    String     @map("tenant_id") @db.Uuid
+  contactId   String     @map("contact_id") @db.Uuid
+  ownerId     String?    @map("owner_id") @db.Uuid
+  source      String?
+  status      LeadStatus @default(NOVO)
+  dealId      String?    @map("deal_id") @db.Uuid
+  notes       String?
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+  deletedAt   DateTime?  @map("deleted_at")
+
+  tenant  Tenant    @relation(fields: [tenantId], references: [id])
+  contact Contact   @relation(fields: [contactId], references: [id])
+  owner   User?     @relation("LeadOwner", fields: [ownerId], references: [id])
+
+  @@index([tenantId, deletedAt])
+  @@index([tenantId, status])
+  @@map("leads")
+}
+
+model Pipeline {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  name        String
+  isDefault   Boolean  @default(false) @map("is_default")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant          @relation(fields: [tenantId], references: [id])
+  stages PipelineStage[] @relation("StagePipeline")
+  deals  Deal[]
+
+  @@index([tenantId])
+  @@map("pipelines")
+}
+
+model PipelineStage {
+  id          String   @id @default(uuid()) @db.Uuid
+  pipelineId  String   @map("pipeline_id") @db.Uuid
+  name        String
+  color       String   @default("#71717A")
+  position    Int
+  probability Int      @default(10)
+
+  pipeline Pipeline       @relation("StagePipeline", fields: [pipelineId], references: [id], onDelete: Cascade)
+  deals    Deal[]         @relation("DealStage")
+
+  @@index([pipelineId, position])
+  @@map("pipeline_stages")
+}
+
+model Deal {
+  id              String     @id @default(uuid()) @db.Uuid
+  tenantId        String     @map("tenant_id") @db.Uuid
+  pipelineId      String     @map("pipeline_id") @db.Uuid
+  stageId         String     @map("stage_id") @db.Uuid
+  companyId       String?    @map("company_id") @db.Uuid
+  primaryContactId String?   @map("primary_contact_id") @db.Uuid
+  ownerId         String     @map("owner_id") @db.Uuid
+  title           String
+  amount          Decimal    @default(0) @db.Decimal(14, 2)
+  currency        String     @default("BRL")
+  expectedCloseDate DateTime? @map("expected_close_date") @db.Date
+  status          DealStatus @default(ABERTO)
+  lossReason      String?    @map("loss_reason")
+  finalAmount     Decimal?   @map("final_amount") @db.Decimal(14, 2)
+  wonAt           DateTime?  @map("won_at")
+  createdAt       DateTime   @default(now()) @map("created_at")
+  updatedAt       DateTime   @updatedAt @map("updated_at")
+  deletedAt       DateTime?  @map("deleted_at")
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id])
+  pipeline       Pipeline       @relation(fields: [pipelineId], references: [id])
+  stage          PipelineStage  @relation("DealStage", fields: [stageId], references: [id])
+  company        Company?       @relation(fields: [companyId], references: [id])
+  primaryContact Contact?       @relation(fields: [primaryContactId], references: [id])
+  owner          User           @relation("DealOwner", fields: [ownerId], references: [id])
+  items          DealItem[]
+  activities     Activity[]
+  stageHistory   DealStageHistory[]
+  cards          Card[]
+  events         Event[]
+
+  @@index([tenantId, deletedAt])
+  @@index([tenantId, status])
+  @@index([tenantId, stageId])
+  @@index([tenantId, ownerId])
+  @@map("deals")
+}
+
+model DealItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  dealId      String   @map("deal_id") @db.Uuid
+  productId   String?  @map("product_id") @db.Uuid
+  description String
+  quantity    Decimal  @default(1) @db.Decimal(12, 2)
+  unitPrice   Decimal  @default(0) @map("unit_price") @db.Decimal(14, 2)
+
+  deal    Deal     @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id])
+
+  @@index([dealId])
+  @@map("deal_items")
+}
+
+model DealStageHistory {
+  id        String   @id @default(uuid()) @db.Uuid
+  dealId    String   @map("deal_id") @db.Uuid
+  fromStage String?  @map("from_stage")
+  toStage   String   @map("to_stage")
+  changedBy String?  @map("changed_by") @db.Uuid
+  changedAt DateTime @default(now()) @map("changed_at")
+
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId, changedAt])
+  @@map("deal_stage_history")
+}
+
+model Product {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  name      String
+  price     Decimal  @default(0) @db.Decimal(14, 2)
+  sku       String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant     @relation(fields: [tenantId], references: [id])
+  items  DealItem[]
+
+  @@index([tenantId])
+  @@map("products")
+}
+
+model Activity {
+  id         String         @id @default(uuid()) @db.Uuid
+  tenantId   String         @map("tenant_id") @db.Uuid
+  type       ActivityType
+  subject    String
+  body       String?
+  dealId     String?        @map("deal_id") @db.Uuid
+  contactId  String?        @map("contact_id") @db.Uuid
+  companyId  String?        @map("company_id") @db.Uuid
+  createdById String        @map("created_by") @db.Uuid
+  status     ActivityStatus @default(DONE)
+  occurredAt DateTime       @default(now()) @map("occurred_at")
+  dueAt      DateTime?      @map("due_at")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  deal      Deal?    @relation(fields: [dealId], references: [id])
+  contact   Contact? @relation(fields: [contactId], references: [id])
+  company   Company? @relation(fields: [companyId], references: [id])
+  createdBy User     @relation("ActivityCreator", fields: [createdById], references: [id])
+
+  @@index([tenantId, occurredAt])
+  @@index([tenantId, status, dueAt])
+  @@index([dealId])
+  @@index([contactId])
+  @@map("activities")
+}
+
+model Note {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id") @db.Uuid
+  body       String
+  authorId   String   @map("author_id") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  author User   @relation(fields: [authorId], references: [id])
+
+  @@index([tenantId, entityType, entityId])
+  @@map("notes")
+}
+
+model Tag {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  name     String
+  color    String @default("#71717A")
+
+  tenant    Tenant      @relation(fields: [tenantId], references: [id])
+  taggables Taggable[]
+
+  @@unique([tenantId, name])
+  @@map("tags")
+}
+
+model Taggable {
+  tagId      String @map("tag_id") @db.Uuid
+  entityType String @map("entity_type")
+  entityId   String @map("entity_id") @db.Uuid
+
+  tag Tag @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([tagId, entityType, entityId])
+  @@index([entityType, entityId])
+  @@map("taggables")
+}
+
+model Goal {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  ownerId     String   @map("owner_id") @db.Uuid
+  metric      String
+  target      Decimal  @db.Decimal(14, 2)
+  periodStart DateTime @map("period_start") @db.Date
+  periodEnd   DateTime @map("period_end") @db.Date
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  owner  User   @relation(fields: [ownerId], references: [id])
+
+  @@index([tenantId, ownerId, periodStart])
+  @@map("goals")
+}
+
+model CustomField {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  entityType String   @map("entity_type")
+  label      String
+  type       String
+  options    Json     @default("{}")
+  position   Int      @default(0)
+
+  tenant Tenant             @relation(fields: [tenantId], references: [id])
+  values CustomFieldValue[]
+
+  @@index([tenantId, entityType])
+  @@map("custom_fields")
+}
+
+model CustomFieldValue {
+  id            String   @id @default(uuid()) @db.Uuid
+  customFieldId String   @map("custom_field_id") @db.Uuid
+  entityId      String   @map("entity_id") @db.Uuid
+  value         Json
+
+  customField CustomField @relation(fields: [customFieldId], references: [id], onDelete: Cascade)
+
+  @@unique([customFieldId, entityId])
+  @@map("custom_field_values")
+}
+
+model Calendar {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  name      String
+  color     String   @default("#7C9CBF")
+  isDefault Boolean  @default(true) @map("is_default")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  tenant Tenant  @relation(fields: [tenantId], references: [id])
+  user   User    @relation(fields: [userId], references: [id])
+  events Event[]
+
+  @@index([tenantId, userId])
+  @@map("calendars")
+}
+
+model Event {
+  id            String      @id @default(uuid()) @db.Uuid
+  tenantId      String      @map("tenant_id") @db.Uuid
+  calendarId    String      @map("calendar_id") @db.Uuid
+  createdById   String      @map("created_by") @db.Uuid
+  title         String
+  description   String?
+  type          EventType   @default(MEETING)
+  color         String      @default("#7C9CBF")
+  startsAt      DateTime    @map("starts_at")
+  endsAt        DateTime    @map("ends_at")
+  allDay        Boolean     @default(false) @map("all_day")
+  location      String?
+  videoLink     String?     @map("video_link")
+  status        EventStatus @default(CONFIRMED)
+  dealId        String?     @map("deal_id") @db.Uuid
+  recurrenceRule String?    @map("recurrence_rule")
+  reminderMinutes Int?      @map("reminder_minutes")
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @updatedAt @map("updated_at")
+  deletedAt     DateTime?   @map("deleted_at")
+
+  tenant    Tenant          @relation(fields: [tenantId], references: [id])
+  calendar  Calendar        @relation(fields: [calendarId], references: [id])
+  createdBy User            @relation("EventCreator", fields: [createdById], references: [id])
+  deal      Deal?           @relation(fields: [dealId], references: [id])
+  attendees EventAttendee[]
+
+  @@index([tenantId, deletedAt])
+  @@index([calendarId, startsAt])
+  @@index([tenantId, startsAt])
+  @@map("events")
+}
+
+model EventAttendee {
+  id        String           @id @default(uuid()) @db.Uuid
+  eventId   String           @map("event_id") @db.Uuid
+  userId    String?          @map("user_id") @db.Uuid
+  contactId String?          @map("contact_id") @db.Uuid
+  response  AttendeeResponse @default(PENDING)
+
+  event   Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user    User?    @relation(fields: [userId], references: [id])
+  contact Contact? @relation(fields: [contactId], references: [id])
+
+  @@index([eventId])
+  @@map("event_attendees")
+}
+
+model Routine {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @map("tenant_id") @db.Uuid
+  ownerId     String?  @map("owner_id") @db.Uuid
+  name        String
+  frequency   String   @default("DAILY")
+  weekdays    Json     @default("[]")
+  dayOfMonth  Int?     @map("day_of_month")
+  defaultTime String?  @map("default_time")
+  isTemplate  Boolean  @default(false) @map("is_template")
+  sharedById  String?  @map("shared_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant         @relation(fields: [tenantId], references: [id])
+  owner  User?          @relation("RoutineOwner", fields: [ownerId], references: [id])
+  items  RoutineItem[]
+  runs   RoutineRun[]
+
+  @@index([tenantId])
+  @@index([tenantId, ownerId])
+  @@map("routines")
+}
+
+model RoutineItem {
+  id        String   @id @default(uuid()) @db.Uuid
+  routineId String   @map("routine_id") @db.Uuid
+  title     String
+  position  Int      @default(0)
+
+  routine Routine        @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  checks  RoutineItemCheck[]
+
+  @@index([routineId])
+  @@map("routine_items")
+}
+
+model RoutineRun {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  routineId String   @map("routine_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  runDate   DateTime @map("run_date") @db.Date
+  status    String   @default("PENDING")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  routine Routine           @relation(fields: [routineId], references: [id], onDelete: Cascade)
+  checks  RoutineItemCheck[]
+  tenant  Tenant     @relation(fields: [tenantId], references: [id])
+  user    User       @relation(fields: [userId], references: [id])
+
+  @@unique([routineId, userId, runDate])
+  @@index([tenantId, userId, runDate])
+  @@map("routine_runs")
+}
+model RoutineItemCheck {
+  id            String   @id @default(uuid()) @db.Uuid
+  routineRunId  String   @map("routine_run_id") @db.Uuid
+  routineItemId String   @map("routine_item_id") @db.Uuid
+  checked       Boolean  @default(false)
+  checkedAt     DateTime? @map("checked_at")
+
+  run  RoutineRun   @relation(fields: [routineRunId], references: [id], onDelete: Cascade)
+  item RoutineItem  @relation(fields: [routineItemId], references: [id], onDelete: Cascade)
+
+  @@unique([routineRunId, routineItemId])
+  @@map("routine_item_checks")
+}
+
+model Habit {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @map("tenant_id") @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  name          String
+  targetPerWeek Int      @default(5) @map("target_per_week")
+  color         String   @default("#8FBF9F")
+  archivedAt    DateTime? @map("archived_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  tenant Tenant     @relation(fields: [tenantId], references: [id])
+  user   User       @relation(fields: [userId], references: [id])
+  logs   HabitLog[]
+
+  @@index([tenantId, userId])
+  @@map("habits")
+}
+
+model HabitLog {
+  id      String   @id @default(uuid()) @db.Uuid
+  habitId String   @map("habit_id") @db.Uuid
+  logDate DateTime @map("log_date") @db.Date
+  value   Int      @default(1)
+
+  habit Habit @relation(fields: [habitId], references: [id], onDelete: Cascade)
+
+  @@unique([habitId, logDate])
+  @@map("habit_logs")
+}
+
+model TimeBlock {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  title     String
+  date      DateTime @db.Date
+  startMin  Int      @map("start_min")
+  endMin    Int      @map("end_min")
+  cardId    String?  @map("card_id") @db.Uuid
+  color     String   @default("#71717A")
+  done      Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  card   Card?  @relation(fields: [cardId], references: [id])
+
+  @@index([tenantId, userId, date])
+  @@map("time_blocks")
+}
+
+model FocusSession {
+  id        String    @id @default(uuid()) @db.Uuid
+  tenantId  String    @map("tenant_id") @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  cardId    String?   @map("card_id") @db.Uuid
+  label     String?
+  startedAt DateTime  @map("started_at")
+  endedAt   DateTime? @map("ended_at")
+  minutes   Int       @default(0)
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id])
+  card   Card?  @relation(fields: [cardId], references: [id])
+
+  @@index([tenantId, userId, startedAt])
+  @@map("focus_sessions")
+}
+
+model Board {
+  id         String         @id @default(uuid()) @db.Uuid
+  tenantId   String         @map("tenant_id") @db.Uuid
+  teamId     String?        @map("team_id") @db.Uuid
+  createdById String        @map("created_by") @db.Uuid
+  name       String
+  visibility BoardVisibility @default(TENANT)
+  icon       String?
+  archivedAt DateTime?      @map("archived_at")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  tenant  Tenant        @relation(fields: [tenantId], references: [id])
+  team    Team?         @relation(fields: [teamId], references: [id])
+  createdBy User        @relation("BoardCreator", fields: [createdById], references: [id])
+  members BoardMember[]
+  lists   List[]
+  labels  Label[]
+  cards   Card[]
+
+  @@index([tenantId, archivedAt])
+  @@map("boards")
+}
+
+model BoardMember {
+  boardId String @map("board_id") @db.Uuid
+  userId  String @map("user_id") @db.Uuid
+  role    String @default("MEMBER")
+
+  board Board @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([boardId, userId])
+  @@map("board_members")
+}
+
+model List {
+  id        String   @id @default(uuid()) @db.Uuid
+  boardId   String   @map("board_id") @db.Uuid
+  name      String
+  position  Float
+  wipLimit  Int?     @map("wip_limit")
+  archivedAt DateTime? @map("archived_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  board Board  @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  cards Card[]
+
+  @@index([boardId, position])
+  @@map("lists")
+}
+
+model Card {
+  id           String        @id @default(uuid()) @db.Uuid
+  tenantId     String        @map("tenant_id") @db.Uuid
+  boardId      String        @map("board_id") @db.Uuid
+  listId       String        @map("list_id") @db.Uuid
+  createdById  String        @map("created_by") @db.Uuid
+  title        String
+  description  String        @default("")
+  position     Float
+  priority     CardPriority  @default(MEDIUM)
+  startDate    DateTime?     @map("start_date")
+  dueDate      DateTime?     @map("due_date")
+  estimateMin  Int?          @map("estimate_min")
+  spentMin     Int?          @map("spent_min")
+  dealId       String?       @map("deal_id") @db.Uuid
+  completedAt  DateTime?     @map("completed_at")
+  archivedAt   DateTime?     @map("archived_at")
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  board    Board          @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  list     List           @relation(fields: [listId], references: [id])
+  createdBy User          @relation("CardCreator", fields: [createdById], references: [id])
+  deal     Deal?          @relation(fields: [dealId], references: [id])
+  assignees CardAssignee[]
+  labels   CardLabel[]
+  checklists Checklist[]
+  comments  CardComment[]
+  timeBlocks TimeBlock[]
+  focusSessions FocusSession[]
+
+  @@index([tenantId, listId, position])
+  @@index([tenantId, dueDate])
+  @@index([boardId])
+  @@map("cards")
+}
+
+model CardAssignee {
+  cardId String @map("card_id") @db.Uuid
+  userId String @map("user_id") @db.Uuid
+
+  card Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([cardId, userId])
+  @@map("card_assignees")
+}
+
+model Label {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  boardId  String @map("board_id") @db.Uuid
+  name     String
+  color    String @default("#71717A")
+
+  tenant Tenant      @relation(fields: [tenantId], references: [id])
+  board  Board       @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  cards  CardLabel[]
+
+  @@index([tenantId])
+  @@index([boardId])
+  @@map("labels")
+}
+
+model CardLabel {
+  cardId  String @map("card_id") @db.Uuid
+  labelId String @map("label_id") @db.Uuid
+
+  card  Card  @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  label Label @relation(fields: [labelId], references: [id], onDelete: Cascade)
+
+  @@id([cardId, labelId])
+  @@map("card_labels")
+}
+
+model Checklist {
+  id        String          @id @default(uuid()) @db.Uuid
+  cardId    String          @map("card_id") @db.Uuid
+  title     String
+  createdAt DateTime        @default(now()) @map("created_at")
+
+  card  Card             @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  items ChecklistItem[]
+
+  @@index([cardId])
+  @@map("checklists")
+}
+
+model ChecklistItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  checklistId String   @map("checklist_id") @db.Uuid
+  title       String
+  checked     Boolean  @default(false)
+  position    Float    @default(0)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  checklist Checklist @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  @@index([checklistId])
+  @@map("checklist_items")
+}
+
+model CardComment {
+  id        String   @id @default(uuid()) @db.Uuid
+  cardId    String   @map("card_id") @db.Uuid
+  authorId  String   @map("author_id") @db.Uuid
+  body      String
+  mentions  Json     @default("[]")
+  editedAt  DateTime? @map("edited_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  card   Card @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  author User @relation(fields: [authorId], references: [id])
+
+  @@index([cardId, createdAt])
+  @@map("card_comments")
+}
+
+model Folder {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @map("tenant_id") @db.Uuid
+  parentId  String?  @map("parent_id") @db.Uuid
+  name      String
+  createdById String  @map("created_by") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
+
+  tenant  Tenant   @relation(fields: [tenantId], references: [id])
+  parent  Folder?  @relation("FolderTree", fields: [parentId], references: [id])
+  folders Folder[] @relation("FolderTree")
+  files   File[]
+  createdBy User   @relation("FolderCreator", fields: [createdById], references: [id])
+
+  @@index([tenantId, deletedAt])
+  @@map("folders")
+}
+
+model File {
+  id          String     @id @default(uuid()) @db.Uuid
+  tenantId    String     @map("tenant_id") @db.Uuid
+  folderId    String?    @map("folder_id") @db.Uuid
+  uploadedBy  String     @map("uploaded_by") @db.Uuid
+  name        String
+  mimeType    String     @map("mime_type")
+  sizeBytes   BigInt     @map("size_bytes")
+  storageKey  String     @map("storage_key")
+  status      FileStatus @default(UPLOADING)
+  checksum    String?
+  scanResult  String?    @map("scan_result")
+  scannedAt   DateTime?  @map("scanned_at")
+  deletedAt   DateTime?  @map("deleted_at")
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  tenant   Tenant        @relation(fields: [tenantId], references: [id])
+  folder   Folder?       @relation(fields: [folderId], references: [id])
+  uploader User          @relation(fields: [uploadedBy], references: [id])
+  versions FileVersion[]
+  links    FileLink[]
+
+  @@index([tenantId, deletedAt])
+  @@index([tenantId, folderId])
+  @@map("files")
+}
+
+model FileVersion {
+  id         String   @id @default(uuid()) @db.Uuid
+  fileId     String   @map("file_id") @db.Uuid
+  version    Int
+  storageKey String   @map("storage_key")
+  sizeBytes  BigInt   @map("size_bytes")
+  uploadedBy String   @map("uploaded_by") @db.Uuid
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  file     File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  uploader User @relation(fields: [uploadedBy], references: [id])
+
+  @@unique([fileId, version])
+  @@map("file_versions")
+}
+
+model FileLink {
+  id         String   @id @default(uuid()) @db.Uuid
+  fileId     String   @map("file_id") @db.Uuid
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id") @db.Uuid
+
+  file File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@unique([fileId, entityType, entityId])
+  @@index([entityType, entityId])
+  @@map("file_links")
+}
+
+model Notification {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @map("tenant_id") @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  type       String
+  title      String
+  body       String?
+  entityType String?  @map("entity_type")
+  entityId   String?  @map("entity_id") @db.Uuid
+  url        String?
+  read       Boolean  @default(false)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, read, createdAt])
+  @@map("notifications")
+}

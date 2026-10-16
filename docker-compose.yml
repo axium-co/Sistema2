@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: axium-postgres
+    environment:
+      POSTGRES_USER: axium
+      POSTGRES_PASSWORD: axium_dev_password
+      POSTGRES_DB: axium
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axium"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: axium-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    profiles: ["s3"]
+    container_name: axium-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: axium
+      MINIO_ROOT_PASSWORD: axium_minio_password
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    profiles: ["s3"]
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 axium axium_minio_password &&
+      mc mb -p local/axium-files || true
+      "
+
+volumes:
+  pgdata:
+  miniodata:

@@ -1,0 +1,25 @@
+{
+  "name": "axium",
+  "private": true,
+  "version": "0.1.0",
+  "description": "AXIUM — Sistema Comercial Integrado (CRM + Agenda + Rotina + Tarefas + Arquivos)",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w @axium/api & npm run dev -w @axium/web",
+    "dev:api": "npm run dev -w @axium/api",
+    "dev:web": "npm run dev -w @axium/web",
+    "build": "npm run build -w @axium/shared && npm run build -w @axium/api && npm run build -w @axium/web",
+    "lint": "npm run lint -w @axium/api && npm run lint -w @axium/web",
+    "test": "npm run test -w @axium/api",
+    "db:migrate": "npm run db:migrate -w @axium/api",
+    "db:seed": "npm run db:seed -w @axium/api",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
