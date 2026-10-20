@@ -1,6 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { PrismaModule } from './prisma/prisma.service';
 import { AuthModule } from './modules/auth/auth.module';
 import { UsersModule } from './modules/users/users.module';
@@ -13,8 +13,14 @@ import { DashboardModule } from './modules/dashboard/dashboard.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { SearchModule } from './modules/search/search.module';
 import { ImportModule } from './modules/import/import.module';
+import { AutomationsModule } from './modules/automations/automations.module';
+import { LgpdModule } from './modules/lgpd/lgpd.module';
+import { ApiKeysModule } from './modules/api-keys/api-keys.module';
+import { BillingModule } from './modules/billing/billing.module';
+import { IntegrationsModule } from './modules/integrations/integrations.module';
 import { HealthController } from './health.controller';
 import { JwtAuthGuard, PermissionsGuard } from './common/auth';
+import { RlsInterceptor } from './common/rls.interceptor';
 
 @Module({
   imports: [
@@ -31,11 +37,17 @@ import { JwtAuthGuard, PermissionsGuard } from './common/auth';
     NotificationsModule,
     SearchModule,
     ImportModule,
+    AutomationsModule,
+    LgpdModule,
+    ApiKeysModule,
+    BillingModule,
+    IntegrationsModule,
   ],
   controllers: [HealthController],
   providers: [
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: PermissionsGuard },
+    { provide: APP_INTERCEPTOR, useClass: RlsInterceptor },
   ],
 })
 export class AppModule {}

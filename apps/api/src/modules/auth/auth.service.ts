@@ -1,7 +1,7 @@
 import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import * as jwt from 'jsonwebtoken';
-import { hashPassword, verifyPassword } from '../../common/password';
+import { hashPassword, verifyPassword, passwordHasher } from '../../common/password';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContext } from '../../common/tenant-context';
 import { AuditService } from '../../common/audit.service';
@@ -156,6 +156,18 @@ export class AuthService {
     const valid = await verifyPassword(dto.password, user.passwordHash);
     if (!valid) {
       throw new UnauthorizedException('E-mail ou senha inválidos');
+    }
+
+    if (user.passwordHash.startsWith('$2') && (await passwordHasher()) === 'argon2') {
+      try {
+        const rehashed = await hashPassword(dto.password);
+        await TenantContext.run({ tenantId: user.tenantId }, () =>
+          this.prisma.db.user.update({ where: { id: user.id }, data: { passwordHash: rehashed } }),
+        );
+        user.passwordHash = rehashed;
+      } catch {
+        /* rehash é opcional: nunca bloqueia o login */
+      }
     }
 
     if (user.twoFactorEnabled && user.twoFactorSecret) {

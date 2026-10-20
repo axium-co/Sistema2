@@ -7,6 +7,8 @@ export interface TenantStore {
   userId?: string;
   role?: Role;
   allowUnscoped?: boolean;
+  /** Cliente de transação com RLS ativo (definido quando RLS_ENABLED=true). */
+  tx?: unknown;
 }
 
 class TenantContextService {

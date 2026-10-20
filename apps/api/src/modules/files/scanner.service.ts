@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { createConnection } from 'node:net';
 
 export interface ScanVerdict {
   clean: boolean;
@@ -14,26 +15,101 @@ const DANGEROUS_EXTENSIONS = new Set([
 /**
  * Verificação de arquivos enviados.
  *
- * Implementa uma análise heurística local (sem serviço externo): compara os
- * "magic bytes" do conteúdo com o tipo MIME declarado, bloqueia extensões
- * executáveis (inclusive dupla extensão) e inspeciona SVG em busca de conteúdo
- * ativo. Pode ser substituída por ClamAV/VirusTotal mantendo a interface.
+ * Quando `CLAMAV_HOST` está definido, usa o protocolo INSTREAM do clamd para
+ * escanear o conteúdo. Sempre executa antes a heurística local (magic bytes,
+ * extensões executáveis, SVG ativo), que também serve de fallback quando o
+ * antivírus está indisponível. Com `CLAMAV_STRICT=true`, a indisponibilidade do
+ * clamd bloqueia o arquivo em vez de liberar pela heurística.
  *
- * Variável de ambiente `FILE_SCAN_ENABLED=false` desliga o bloqueio (arquivos
- * seguem direto para AVAILABLE) — útil para ambientes controlados.
+ * `FILE_SCAN_ENABLED=false` desliga toda a verificação (arquivos seguem direto
+ * para AVAILABLE) — útil para ambientes controlados.
  */
 @Injectable()
 export class ScannerService {
   private readonly logger = new Logger('FileScanner');
   private readonly enabled = process.env.FILE_SCAN_ENABLED !== 'false';
+  private readonly clamHost = process.env.CLAMAV_HOST;
+  private readonly clamPort = Number(process.env.CLAMAV_PORT ?? 3310);
+  private readonly clamStrict = process.env.CLAMAV_STRICT === 'true';
 
   async scan(buffer: Buffer, name: string, mimeType: string): Promise<ScanVerdict> {
     if (!this.enabled) return { clean: true };
-    const verdict = this.inspect(buffer, name, mimeType);
-    if (!verdict.clean) {
-      this.logger.warn(`Arquivo potencialmente malicioso "${name}" (${mimeType}): ${verdict.reason}`);
+
+    const heuristic = this.inspect(buffer, name, mimeType);
+    if (!heuristic.clean) {
+      this.logger.warn(`Arquivo potencialmente malicioso "${name}" (${mimeType}): ${heuristic.reason}`);
+      return heuristic;
     }
-    return verdict;
+
+    if (!this.clamHost) return heuristic;
+
+    try {
+      return await this.scanWithClamd(buffer, name);
+    } catch (err) {
+      if (this.clamStrict) {
+        this.logger.error(`ClamAV indisponível para "${name}": ${err}`);
+        return { clean: false, reason: 'verificação antivírus indisponível' };
+      }
+      this.logger.warn(`ClamAV indisponível para "${name}", mantendo verificação heurística: ${err}`);
+      return heuristic;
+    }
+  }
+
+  /** Envia o buffer via INSTREAM e interpreta a resposta do clamd. */
+  private scanWithClamd(buffer: Buffer, name: string): Promise<ScanVerdict> {
+    return new Promise<ScanVerdict>((resolve, reject) => {
+      const socket = createConnection({ host: this.clamHost, port: this.clamPort });
+      let response = '';
+      let settled = false;
+      const finish = (err: Error | null, verdict?: ScanVerdict) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.destroy();
+        if (err) reject(err);
+        else resolve(verdict!);
+      };
+      const timer = setTimeout(() => finish(new Error('timeout na conexão com o clamd')), 20000);
+
+      socket.once('connect', () => {
+        try {
+          socket.write('zINSTREAM\0');
+          const chunkSize = 64 * 1024;
+          for (let offset = 0; offset < buffer.length; offset += chunkSize) {
+            const chunk = buffer.subarray(offset, offset + chunkSize);
+            const size = Buffer.alloc(4);
+            size.writeUInt32BE(chunk.length, 0);
+            socket.write(size);
+            socket.write(chunk);
+          }
+          socket.write(Buffer.from([0, 0, 0, 0]));
+        } catch (err) {
+          finish(err as Error);
+        }
+      });
+
+      socket.on('data', (data) => {
+        response += data.toString('utf8');
+        if (response.includes('\0') || /(OK|FOUND)\s*$/.test(response)) {
+          finish(null, this.parseClamdResponse(response, name));
+        }
+      });
+      socket.once('error', (err) => finish(err));
+      socket.once('close', () => {
+        if (!settled && response) finish(null, this.parseClamdResponse(response, name));
+      });
+    });
+  }
+
+  private parseClamdResponse(raw: string, name: string): ScanVerdict {
+    const response = raw.replace(/\0/g, '').trim();
+    if (/FOUND/i.test(response)) {
+      const signature = response.replace(/^stream:\s*/i, '').replace(/\s*FOUND.*$/i, '').trim();
+      this.logger.warn(`ClamAV detectou ameaça em "${name}": ${signature}`);
+      return { clean: false, reason: `Assinatura detectada: ${signature || 'desconhecida'}` };
+    }
+    if (/\bOK\b/i.test(response)) return { clean: true };
+    throw new Error(`resposta inesperada do clamd: ${response.slice(0, 120)}`);
   }
 
   private inspect(buffer: Buffer, name: string, mimeType: string): ScanVerdict {

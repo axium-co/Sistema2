@@ -34,6 +34,12 @@ export class RoutinesController {
     return this.service.weeklyReview(user.userId);
   }
 
+  @Get('stats')
+  @RequirePermission('rotina', 'view')
+  stats(@CurrentUser() user: AuthUser, @Query('days') days?: string) {
+    return this.service.routineStats(user.userId, days ? Number(days) : undefined);
+  }
+
   // ---------- Habitos ----------
   @Get('habits')
   @RequirePermission('rotina', 'view')

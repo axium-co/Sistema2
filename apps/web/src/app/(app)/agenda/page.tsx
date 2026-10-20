@@ -16,22 +16,59 @@ import {
   startOfWeek,
 } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
-import { ChevronLeft, ChevronRight, Plus, Clock, MapPin, Video } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Clock, MapPin, Pencil, Video, RefreshCw, Link2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/layout/page-header';
 import { Badge, Button, Card, Drawer, EmptyState, Field, Input, Modal, Select, Skeleton, Textarea } from '@/components/ui';
 import { EVENT_COLORS, EVENT_TYPE_LABELS, formatDate, formatTime, toDateInput } from '@/lib/labels';
+import {
+  buildRecurrenceRule,
+  defaultRecurrenceFields,
+  describeRecurrence,
+  intervalUnit,
+  parseRecurrenceRule,
+  weekdayCode,
+  RECURRENCE_END_OPTIONS,
+  RECURRENCE_FREQ_OPTIONS,
+  WEEKDAY_OPTIONS,
+  type RecurrenceEnd,
+  type RecurrenceFreq,
+} from '@/lib/recurrence';
 import { cn } from '@/lib/utils';
 
 type View = 'day' | 'week' | 'month';
+
+interface EventForm {
+  _editingId?: string;
+  _occurrenceId?: string;
+  _scope?: 'this';
+  title: string;
+  type: string;
+  color?: string;
+  startsAt: string;
+  endsAt: string;
+  location?: string;
+  videoLink?: string;
+  description?: string;
+  reminderMinutes: number;
+  recurrence: '' | RecurrenceFreq;
+  interval: number;
+  byDay: string[];
+  end: RecurrenceEnd;
+  count: number;
+  until: string;
+  attendees?: { userId: string }[];
+}
 
 export default function AgendaPage() {
   const qc = useQueryClient();
   const [view, setView] = useState<View>('week');
   const [cursor, setCursor] = useState(new Date());
-  const [creating, setCreating] = useState<any | null>(null);
+  const [form, setForm] = useState<EventForm | null>(null);
   const [selected, setSelected] = useState<any | null>(null);
+  const [scopePrompt, setScopePrompt] = useState<'edit' | 'delete' | null>(null);
+  const [scopeChoice, setScopeChoice] = useState<'this' | 'all'>('this');
   const [conflicts, setConflicts] = useState<any[]>([]);
 
   const range = useMemo(() => {
@@ -47,26 +84,80 @@ export default function AgendaPage() {
 
   const { data: users } = useQuery({ queryKey: ['users-min'], queryFn: () => api.get<any[]>('/api/users'), retry: false });
 
-  const create = useMutation({
-    mutationFn: (payload: any) => api.post('/api/agenda/events', payload),
-    onSuccess: (res: any) => {
+  const { data: google } = useQuery({
+    queryKey: ['google-status'],
+    queryFn: () => api.get<any>('/api/integrations/google/status'),
+    retry: false,
+  });
+
+  const connectGoogle = useMutation({
+    mutationFn: () => api.get<{ url: string; mocked: boolean }>('/api/integrations/google/auth-url'),
+    onSuccess: (res) => {
+      if (res?.url) window.open(res.url, '_blank', 'noopener');
+      toast.info('Conclua a autorização do Google na nova aba e depois clique em Sincronizar');
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const syncGoogle = useMutation({
+    mutationFn: () => api.post<any>('/api/integrations/google/sync'),
+    onSuccess: (res) => {
+      if (res?.mocked) toast.info('Google Calendar em modo simulado (credenciais não configuradas)');
+      else toast.success(`Sincronizado: ${res.imported} importado(s), ${res.exported} enviado(s)`);
+      qc.invalidateQueries({ queryKey: ['google-status'] });
+      qc.invalidateQueries({ queryKey: ['events'] });
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  const save = useMutation({
+    mutationFn: async (f: EventForm) => {
+      const isOccurrenceEdit = !!f._editingId && f._scope === 'this' && !!f._occurrenceId;
+      const payload: any = {
+        title: f.title,
+        type: f.type,
+        startsAt: f.startsAt,
+        endsAt: f.endsAt,
+        location: f.location ?? '',
+        videoLink: f.videoLink ?? '',
+        description: f.description ?? '',
+        reminderMinutes: Number(f.reminderMinutes) || 0,
+      };
+      if (f.color) payload.color = f.color;
+      if (!isOccurrenceEdit) {
+        const rule = buildRecurrenceRule({ freq: f.recurrence, interval: f.interval, byDay: f.byDay, end: f.end, count: f.count, until: f.until });
+        if (rule) payload.recurrenceRule = rule;
+        else if (f._editingId) payload.recurrenceRule = null;
+      }
+      if (f._editingId) {
+        const id = isOccurrenceEdit ? f._occurrenceId! : f._editingId;
+        return api.patch(`/api/agenda/events/${encodeURIComponent(id)}`, payload);
+      }
+      if (f.attendees?.length) payload.attendees = f.attendees;
+      return api.post('/api/agenda/events', payload);
+    },
+    onSuccess: (res: any, f: EventForm) => {
       if (res?.conflicts?.length) toast.warning(`${res.conflicts.length} conflito(s) de horário detectado(s)`);
-      else toast.success('Compromisso agendado');
+      else toast.success(f._editingId ? 'Compromisso atualizado' : 'Compromisso agendado');
       qc.invalidateQueries({ queryKey: ['events'] });
       qc.invalidateQueries({ queryKey: ['my-day'] });
-      setCreating(null);
+      setForm(null);
+      setSelected(null);
       setConflicts([]);
     },
     onError: (e: any) => toast.error(e.message),
   });
 
   const remove = useMutation({
-    mutationFn: (id: string) => api.del(`/api/agenda/events/${id}`),
-    onSuccess: () => {
-      toast.success('Compromisso removido');
+    mutationFn: ({ id }: { id: string }) => api.del(`/api/agenda/events/${encodeURIComponent(id)}`),
+    onSuccess: (_res, vars) => {
+      toast.success(vars.id.includes('__') ? 'Ocorrência removida' : 'Compromisso removido');
       qc.invalidateQueries({ queryKey: ['events'] });
+      qc.invalidateQueries({ queryKey: ['my-day'] });
       setSelected(null);
+      setScopePrompt(null);
     },
+    onError: (e: any) => toast.error(e.message),
   });
 
   function openNew(date?: Date, hour = 9) {
@@ -75,13 +166,72 @@ export default function AgendaPage() {
     start.setHours(hour, 0, 0, 0);
     const end = new Date(start);
     end.setHours(hour + 1);
-    setCreating({
+    setForm({
       title: '',
       type: 'MEETING',
       startsAt: toDateInput(start),
       endsAt: toDateInput(end),
-      _date: date ?? cursor,
+      reminderMinutes: 15,
+      recurrence: '',
+      ...defaultRecurrenceFields(),
     });
+  }
+
+  function openEdit(event: any, scope?: 'this' | 'all') {
+    const parsed = parseRecurrenceRule(event.recurrenceRule);
+    const isOccurrence = !!event.isRecurring;
+    const single = scope === 'this';
+    setForm({
+      _editingId: isOccurrence ? event.masterEventId : event.id,
+      _occurrenceId: isOccurrence ? event.id : undefined,
+      _scope: single ? 'this' : undefined,
+      title: event.title ?? '',
+      type: event.type ?? 'MEETING',
+      color: event.color,
+      startsAt: toDateInput(event.startsAt),
+      endsAt: toDateInput(event.endsAt),
+      location: event.location ?? '',
+      videoLink: event.videoLink ?? '',
+      description: event.description ?? '',
+      reminderMinutes: event.reminderMinutes ?? 15,
+      recurrence: single ? '' : parsed.freq,
+      interval: parsed.interval,
+      byDay: parsed.byDay,
+      end: parsed.end,
+      count: parsed.count,
+      until: parsed.until,
+    });
+  }
+
+  function handleEdit() {
+    if (!selected) return;
+    if (selected.isRecurring) {
+      setScopeChoice('this');
+      setScopePrompt('edit');
+    } else {
+      openEdit(selected);
+    }
+  }
+
+  function handleRemove() {
+    if (!selected) return;
+    if (selected.isRecurring) {
+      setScopeChoice('this');
+      setScopePrompt('delete');
+    } else {
+      remove.mutate({ id: selected.id });
+    }
+  }
+
+  function confirmScope() {
+    if (!selected || !scopePrompt) return;
+    if (scopePrompt === 'edit') {
+      openEdit(selected, scopeChoice);
+      setScopePrompt(null);
+      return;
+    }
+    const onlyThis = scopeChoice === 'this';
+    remove.mutate({ id: onlyThis ? selected.id : selected.masterEventId ?? selected.id });
   }
 
   const label =
@@ -102,9 +252,20 @@ export default function AgendaPage() {
         title="Agenda"
         description="Compromissos, visitas e follow-ups em um só calendário."
         actions={
-          <Button onClick={() => openNew()}>
-            <Plus size={15} /> Novo compromisso
-          </Button>
+          <div className="flex items-center gap-2">
+            {google?.connected ? (
+              <Button variant="ghost" onClick={() => syncGoogle.mutate()} disabled={syncGoogle.isPending}>
+                <RefreshCw size={15} className={syncGoogle.isPending ? 'animate-spin' : undefined} /> Sincronizar
+              </Button>
+            ) : (
+              <Button variant="ghost" onClick={() => connectGoogle.mutate()} disabled={connectGoogle.isPending}>
+                <Link2 size={15} /> Google Calendar
+              </Button>
+            )}
+            <Button onClick={() => openNew()}>
+              <Plus size={15} /> Novo compromisso
+            </Button>
+          </div>
         }
       />
 
@@ -195,21 +356,26 @@ export default function AgendaPage() {
         )}
       </div>
 
-      <Modal open={!!creating} onClose={() => setCreating(null)} title="Novo compromisso">
-        {creating && (
+      <Modal open={!!form} onClose={() => setForm(null)} title={form?._editingId ? 'Editar compromisso' : 'Novo compromisso'}>
+        {form && (
           <form
             onSubmit={(e) => {
               e.preventDefault();
-              create.mutate(creating);
+              save.mutate(form);
             }}
             className="space-y-4"
           >
+            {form._scope === 'this' && (
+              <p className="rounded-xl border border-info/30 bg-info/10 px-3 py-2 text-xs text-info">
+                Editando somente esta ocorrência — as demais repetições não serão afetadas.
+              </p>
+            )}
             <Field label="Título">
-              <Input autoFocus required value={creating.title} onChange={(e) => setCreating({ ...creating, title: e.target.value })} placeholder="Ex.: Reunião de proposta" />
+              <Input autoFocus required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Ex.: Reunião de proposta" />
             </Field>
             <div className="grid grid-cols-2 gap-4">
               <Field label="Tipo">
-                <Select value={creating.type} onChange={(e) => setCreating({ ...creating, type: e.target.value })}>
+                <Select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
                   {Object.entries(EVENT_TYPE_LABELS).map(([k, v]) => (
                     <option key={k} value={k}>
                       {v}
@@ -218,38 +384,64 @@ export default function AgendaPage() {
                 </Select>
               </Field>
               <Field label="Local">
-                <Input value={creating.location ?? ''} onChange={(e) => setCreating({ ...creating, location: e.target.value })} />
+                <Input value={form.location ?? ''} onChange={(e) => setForm({ ...form, location: e.target.value })} />
               </Field>
             </div>
             <div className="grid grid-cols-2 gap-4">
               <Field label="Início">
-                <Input type="datetime-local" required value={creating.startsAt} onChange={(e) => setCreating({ ...creating, startsAt: e.target.value })} />
+                <Input type="datetime-local" required value={form.startsAt} onChange={(e) => setForm({ ...form, startsAt: e.target.value })} />
               </Field>
               <Field label="Término">
-                <Input type="datetime-local" required value={creating.endsAt} onChange={(e) => setCreating({ ...creating, endsAt: e.target.value })} />
+                <Input type="datetime-local" required value={form.endsAt} onChange={(e) => setForm({ ...form, endsAt: e.target.value })} />
               </Field>
             </div>
+            <div className="grid grid-cols-2 gap-4">
+              <Field label="Repetição">
+                <Select
+                  value={form.recurrence}
+                  disabled={form._scope === 'this'}
+                  onChange={(e) => setForm({ ...form, recurrence: e.target.value as EventForm['recurrence'] })}
+                >
+                  {RECURRENCE_FREQ_OPTIONS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Lembrete (min)" hint="Antecedência da notificação">
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.reminderMinutes}
+                  onChange={(e) => setForm({ ...form, reminderMinutes: Number(e.target.value) })}
+                />
+              </Field>
+            </div>
+            {form.recurrence && form._scope !== 'this' && (
+              <RecurrenceFields form={form} setForm={setForm} />
+            )}
             <Field label="Link de vídeo">
-              <Input value={creating.videoLink ?? ''} onChange={(e) => setCreating({ ...creating, videoLink: e.target.value })} placeholder="https://" />
+              <Input value={form.videoLink ?? ''} onChange={(e) => setForm({ ...form, videoLink: e.target.value })} placeholder="https://" />
             </Field>
             <Field label="Descrição">
-              <Textarea value={creating.description ?? ''} onChange={(e) => setCreating({ ...creating, description: e.target.value })} />
+              <Textarea value={form.description ?? ''} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </Field>
-            {(users ?? []).length > 0 && (
+            {!form._editingId && (users ?? []).length > 0 && (
               <Field label="Participantes">
                 <div className="flex flex-wrap gap-2">
                   {(users ?? []).map((u) => {
-                    const on = (creating.attendees ?? []).some((a: any) => a.userId === u.id);
+                    const on = (form.attendees ?? []).some((a: any) => a.userId === u.id);
                     return (
                       <button
                         type="button"
                         key={u.id}
                         onClick={() =>
-                          setCreating({
-                            ...creating,
+                          setForm({
+                            ...form,
                             attendees: on
-                              ? (creating.attendees ?? []).filter((a: any) => a.userId !== u.id)
-                              : [...(creating.attendees ?? []), { userId: u.id }],
+                              ? (form.attendees ?? []).filter((a: any) => a.userId !== u.id)
+                              : [...(form.attendees ?? []), { userId: u.id }],
                           })
                         }
                         className={cn('rounded-full border px-3 py-1 text-xs', on ? 'border-white/30 bg-white/10 text-fg' : 'border-white/10 text-muted hover:text-fg')}
@@ -267,15 +459,50 @@ export default function AgendaPage() {
               </div>
             )}
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="ghost" onClick={() => setCreating(null)}>
+              <Button type="button" variant="ghost" onClick={() => setForm(null)}>
                 Cancelar
               </Button>
-              <Button type="submit" disabled={create.isPending}>
-                {create.isPending ? 'Agendando…' : 'Agendar'}
+              <Button type="submit" disabled={save.isPending}>
+                {save.isPending ? 'Salvando…' : form._editingId ? 'Salvar' : 'Agendar'}
               </Button>
             </div>
           </form>
         )}
+      </Modal>
+
+      <Modal open={!!scopePrompt} onClose={() => setScopePrompt(null)} title="Compromisso recorrente">
+        <div className="space-y-4">
+          <p className="text-sm text-muted">
+            Este compromisso se repete. O que você deseja {scopePrompt === 'edit' ? 'editar' : 'remover'}?
+          </p>
+          <div className="space-y-2">
+            {([
+              { value: 'this' as const, label: 'Somente esta ocorrência', hint: 'Apenas o compromisso exibido' },
+              { value: 'all' as const, label: 'Toda a repetição', hint: 'A série inteira' },
+            ]).map((opt) => (
+              <button
+                type="button"
+                key={opt.value}
+                onClick={() => setScopeChoice(opt.value)}
+                className={cn(
+                  'flex w-full items-center justify-between rounded-xl border px-4 py-3 text-left transition-colors',
+                  scopeChoice === opt.value ? 'border-white/30 bg-white/10' : 'border-white/10 hover:bg-white/5',
+                )}
+              >
+                <span className="text-sm text-fg">{opt.label}</span>
+                <span className="text-xs text-faint">{opt.hint}</span>
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setScopePrompt(null)}>
+              Cancelar
+            </Button>
+            <Button onClick={confirmScope} disabled={remove.isPending}>
+              {scopePrompt === 'edit' ? 'Continuar' : remove.isPending ? 'Removendo…' : 'Remover'}
+            </Button>
+          </div>
+        </div>
       </Modal>
 
       <Drawer open={!!selected} onClose={() => setSelected(null)} title={selected?.title ?? ''} subtitle={selected ? EVENT_TYPE_LABELS[selected.type] : ''}>
@@ -283,6 +510,7 @@ export default function AgendaPage() {
           <div className="space-y-5">
             <div className="flex flex-wrap gap-2">
               <Badge color={selected.color ?? EVENT_COLORS[selected.type]}>{EVENT_TYPE_LABELS[selected.type]}</Badge>
+              {selected.recurrenceRule && <Badge color="#A89BC9">{describeRecurrence(selected.recurrenceRule) ?? 'Recorrente'}</Badge>}
               {selected.deal && <Badge>{selected.deal.title}</Badge>}
             </div>
             <div className="space-y-2 text-sm text-muted">
@@ -311,14 +539,84 @@ export default function AgendaPage() {
                 </div>
               </div>
             )}
-            <div className="flex justify-end border-t border-white/5 pt-4">
-              <Button variant="danger" onClick={() => remove.mutate(selected.id)}>
+            <div className="flex items-center justify-between gap-2 border-t border-white/5 pt-4">
+              <Button variant="ghost" onClick={handleEdit}>
+                <Pencil size={14} /> Editar
+              </Button>
+              <Button variant="danger" onClick={handleRemove} disabled={remove.isPending}>
                 Remover compromisso
               </Button>
             </div>
           </div>
         )}
       </Drawer>
+    </div>
+  );
+}
+
+function RecurrenceFields({ form, setForm }: { form: EventForm; setForm: (f: EventForm) => void }) {
+  const effectiveByDay = form.byDay.length ? form.byDay : form.startsAt ? [weekdayCode(new Date(form.startsAt))] : [];
+  const previewRule = buildRecurrenceRule({ freq: form.recurrence, interval: form.interval, byDay: effectiveByDay, end: form.end, count: form.count, until: form.until });
+
+  function toggleDay(code: string) {
+    const order = WEEKDAY_OPTIONS.map((w) => w.value);
+    const next = effectiveByDay.includes(code)
+      ? effectiveByDay.filter((c) => c !== code)
+      : [...effectiveByDay, code].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+    setForm({ ...form, byDay: next });
+  }
+
+  return (
+    <div className="space-y-3 rounded-xl border border-white/5 bg-elevated/50 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted">A cada</span>
+        <Input
+          type="number"
+          min={1}
+          className="w-20"
+          value={form.interval}
+          onChange={(e) => setForm({ ...form, interval: Math.max(1, Number(e.target.value) || 1) })}
+        />
+        <span className="text-xs text-muted">{intervalUnit(form.recurrence, form.interval)}</span>
+      </div>
+      {form.recurrence === 'WEEKLY' && (
+        <div className="flex flex-wrap gap-1.5">
+          {WEEKDAY_OPTIONS.map((w) => (
+            <button
+              type="button"
+              key={w.value}
+              onClick={() => toggleDay(w.value)}
+              className={cn(
+                'rounded-full border px-2.5 py-1 text-xs transition-colors',
+                effectiveByDay.includes(w.value) ? 'border-white/30 bg-white/10 text-fg' : 'border-white/10 text-muted hover:text-fg',
+              )}
+            >
+              {w.label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-muted">Fim</span>
+        <Select value={form.end} onChange={(e) => setForm({ ...form, end: e.target.value as RecurrenceEnd })} className="w-40">
+          {RECURRENCE_END_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </Select>
+        {form.end === 'count' && (
+          <Input
+            type="number"
+            min={1}
+            className="w-20"
+            value={form.count}
+            onChange={(e) => setForm({ ...form, count: Math.max(1, Number(e.target.value) || 1) })}
+          />
+        )}
+        {form.end === 'until' && <Input type="date" className="w-40" value={form.until} onChange={(e) => setForm({ ...form, until: e.target.value })} />}
+      </div>
+      {previewRule && <p className="text-xs text-faint">{describeRecurrence(previewRule)}</p>}
     </div>
   );
 }

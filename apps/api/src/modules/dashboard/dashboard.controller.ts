@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { RequirePermission, type AuthUser } from '../../common/auth';
 import { CurrentUser } from '../../common/current-user.decorator';
@@ -23,5 +23,11 @@ export class DashboardController {
   @RequirePermission('relatorios', 'view')
   leadsBySource() {
     return this.service.leadsBySource();
+  }
+
+  @Get('reports')
+  @RequirePermission('relatorios', 'view')
+  reports(@Query('days') days?: string) {
+    return this.service.reports(days);
   }
 }

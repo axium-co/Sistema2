@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Post,
+  Put,
   Query,
   Req,
   Res,
@@ -99,6 +100,46 @@ export class FilesController {
     @Body() body: { folderId?: string; entityType?: string; entityId?: string },
   ) {
     return this.service.upload({ file, userId: user.userId, ...body });
+  }
+
+  @Post('uploads/init')
+  @RequirePermission('arquivos', 'create')
+  initChunked(
+    @Body()
+    body: {
+      name: string;
+      mimeType: string;
+      size: number;
+      folderId?: string;
+      entityType?: string;
+      entityId?: string;
+    },
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.service.initChunkedUpload({ ...body, userId: user.userId });
+  }
+
+  @Post('uploads/:id/chunks/:index')
+  @RequirePermission('arquivos', 'create')
+  @UseInterceptors(FileInterceptor('chunk', { limits: { fileSize: 100 * 1024 * 1024 } }))
+  uploadChunk(
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @UploadedFile() chunk: any,
+  ) {
+    return this.service.uploadChunk(id, Number(index), chunk?.buffer);
+  }
+
+  @Post('uploads/:id/complete')
+  @RequirePermission('arquivos', 'create')
+  completeChunked(@Param('id') id: string) {
+    return this.service.completeChunked(id);
+  }
+
+  @Delete('uploads/:id')
+  @RequirePermission('arquivos', 'delete')
+  abortChunked(@Param('id') id: string) {
+    return this.service.abortChunked(id);
   }
 
   @Post(':id/link')

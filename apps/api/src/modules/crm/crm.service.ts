@@ -2,7 +2,19 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../common/audit.service';
 import { paginate } from '../../common/pagination';
-import type { CompanyDto, ContactDto, LeadDto, TagDto } from './crm.dto';
+import type {
+  CompanyDto,
+  ContactDto,
+  CustomFieldDto,
+  CustomFieldValueDto,
+  GoalDto,
+  LeadDto,
+  ProductDto,
+  TagDto,
+  UpdateCustomFieldDto,
+  UpdateGoalDto,
+  UpdateProductDto,
+} from './crm.dto';
 
 @Injectable()
 export class CrmService {
@@ -189,6 +201,129 @@ export class CrmService {
   async removeTag(id: string) {
     await this.prisma.findByIdOrFail('tag', id);
     await this.prisma.db.tag.delete({ where: { id } });
+    return { ok: true };
+  }
+
+  // ---------- Products ----------
+  async listProducts(query: { includeInactive?: string; search?: string }) {
+    return this.prisma.db.product.findMany({
+      where: {
+        ...(query.includeInactive === 'true' ? {} : { active: true }),
+        ...(query.search ? { name: { contains: query.search, mode: 'insensitive' as const } } : {}),
+      },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  createProduct(dto: ProductDto) {
+    return this.prisma.db.product.create({
+      data: { name: dto.name, price: dto.price ?? 0, sku: dto.sku ?? null, active: dto.active ?? true },
+    });
+  }
+
+  async updateProduct(id: string, dto: UpdateProductDto) {
+    await this.prisma.findByIdOrFail('product', id);
+    const updated = await this.prisma.db.product.update({ where: { id }, data: dto as any });
+    await this.audit.log({ entityType: 'Product', entityId: id, action: 'UPDATE', after: dto });
+    return updated;
+  }
+
+  async removeProduct(id: string) {
+    await this.prisma.findByIdOrFail('product', id);
+    await this.prisma.db.product.update({ where: { id }, data: { active: false } });
+    await this.audit.log({ entityType: 'Product', entityId: id, action: 'DELETE' });
+    return { ok: true };
+  }
+
+  // ---------- Goals (metas) ----------
+  async listGoals(query: { ownerId?: string }) {
+    return this.prisma.db.goal.findMany({
+      where: { ...(query.ownerId ? { ownerId: query.ownerId } : {}) },
+      orderBy: { periodStart: 'desc' },
+      include: { owner: { select: { id: true, name: true } } },
+    });
+  }
+
+  createGoal(dto: GoalDto, userId: string) {
+    return this.prisma.db.goal.create({
+      data: {
+        ownerId: dto.ownerId ?? userId,
+        metric: dto.metric,
+        target: dto.target,
+        periodStart: new Date(dto.periodStart),
+        periodEnd: new Date(dto.periodEnd),
+      },
+    });
+  }
+
+  async updateGoal(id: string, dto: UpdateGoalDto) {
+    await this.prisma.findByIdOrFail('goal', id);
+    const data: any = { ...dto };
+    if (dto.periodStart) data.periodStart = new Date(dto.periodStart);
+    if (dto.periodEnd) data.periodEnd = new Date(dto.periodEnd);
+    const updated = await this.prisma.db.goal.update({ where: { id }, data });
+    await this.audit.log({ entityType: 'Goal', entityId: id, action: 'UPDATE', after: dto });
+    return updated;
+  }
+
+  async removeGoal(id: string) {
+    await this.prisma.findByIdOrFail('goal', id);
+    await this.prisma.db.goal.delete({ where: { id } });
+    await this.audit.log({ entityType: 'Goal', entityId: id, action: 'DELETE' });
+    return { ok: true };
+  }
+
+  // ---------- Custom fields ----------
+  listCustomFields(entityType?: string) {
+    return this.prisma.db.customField.findMany({
+      where: { ...(entityType ? { entityType } : {}) },
+      orderBy: [{ entityType: 'asc' }, { position: 'asc' }],
+    });
+  }
+
+  createCustomField(dto: CustomFieldDto) {
+    return this.prisma.db.customField.create({
+      data: {
+        entityType: dto.entityType,
+        label: dto.label,
+        type: dto.type,
+        options: (dto.options ?? {}) as any,
+        position: dto.position ?? 0,
+      },
+    });
+  }
+
+  async updateCustomField(id: string, dto: UpdateCustomFieldDto) {
+    await this.prisma.findByIdOrFail('customField', id);
+    return this.prisma.db.customField.update({ where: { id }, data: dto as any });
+  }
+
+  async removeCustomField(id: string) {
+    await this.prisma.findByIdOrFail('customField', id);
+    await this.prisma.db.customField.delete({ where: { id } });
+    return { ok: true };
+  }
+
+  async getCustomFieldValues(entityType: string, entityId: string) {
+    const fields = await this.prisma.db.customField.findMany({
+      where: { entityType },
+      orderBy: { position: 'asc' },
+    });
+    const values = await this.prisma.db.customFieldValue.findMany({
+      where: { entityId, customFieldId: { in: fields.map((f: any) => f.id) } },
+    });
+    const byField = new Map(values.map((v: any) => [v.customFieldId, v.value]));
+    return fields.map((f: any) => ({ field: f, value: byField.get(f.id) ?? null }));
+  }
+
+  async setCustomFieldValue(dto: CustomFieldValueDto) {
+    const field = await this.prisma.findByIdOrFail('customField', dto.customFieldId);
+    if (!field) throw new NotFoundException('Campo personalizado não encontrado');
+    await this.prisma.db.customFieldValue.upsert({
+      where: { customFieldId_entityId: { customFieldId: dto.customFieldId, entityId: dto.entityId } },
+      create: { customFieldId: dto.customFieldId, entityId: dto.entityId, value: dto.value as any },
+      update: { value: dto.value as any },
+    });
     return { ok: true };
   }
 

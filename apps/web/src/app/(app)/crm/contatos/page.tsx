@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Plus, Search, Pencil, Trash2, Mail, Phone } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, Mail, Phone, Upload, Download, FileSpreadsheet, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { toast } from 'sonner';
-import { api } from '@/lib/api';
+import { api, API_URL, useAuth } from '@/lib/api';
 import { PageHeader } from '@/components/layout/page-header';
 import { Button, Card, EmptyState, Field, Input, Modal, Skeleton } from '@/components/ui';
+import { CustomFieldsSection } from '@/components/crm/custom-fields-section';
 import { formatDate } from '@/lib/labels';
 
 interface Contact {
@@ -20,10 +21,20 @@ interface Contact {
   createdAt: string;
 }
 
+interface ImportReport {
+  entity: string;
+  dryRun: boolean;
+  total: number;
+  created: number;
+  skipped: number;
+  errors: { line: number; message: string }[];
+}
+
 export default function ContatosPage() {
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState<Partial<Contact> | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ['contacts', search],
@@ -61,9 +72,14 @@ export default function ContatosPage() {
         title="Contatos"
         description="Todas as pessoas com quem sua equipe se relaciona."
         actions={
-          <Button onClick={() => setEditing({})}>
-            <Plus size={15} /> Novo contato
-          </Button>
+          <>
+            <Button variant="secondary" onClick={() => setImportOpen(true)}>
+              <Upload size={15} /> Importar CSV
+            </Button>
+            <Button onClick={() => setEditing({})}>
+              <Plus size={15} /> Novo contato
+            </Button>
+          </>
         }
       />
 
@@ -176,6 +192,7 @@ export default function ContatosPage() {
                 </select>
               </Field>
             </div>
+            {editing.id && <CustomFieldsSection entityType="Contact" entityId={editing.id} />}
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="ghost" onClick={() => setEditing(null)}>
                 Cancelar
@@ -187,7 +204,118 @@ export default function ContatosPage() {
           </form>
         )}
       </Modal>
+
+      <ImportModal open={importOpen} onClose={() => setImportOpen(false)} />
     </div>
+  );
+}
+
+function ImportModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const qc = useQueryClient();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [file, setFile] = useState<File | null>(null);
+  const [report, setReport] = useState<ImportReport | null>(null);
+
+  const run = useMutation({
+    mutationFn: ({ f, dryRun }: { f: File; dryRun: boolean }) => {
+      const fd = new FormData();
+      fd.append('file', f);
+      return api.post<ImportReport>(`/api/import/contacts?dryRun=${dryRun}`, fd);
+    },
+    onSuccess: (rep) => {
+      setReport(rep);
+      if (!rep.dryRun) {
+        qc.invalidateQueries({ queryKey: ['contacts'] });
+        qc.invalidateQueries({ queryKey: ['companies-min'] });
+        toast.success(`Importação concluída: ${rep.created} criado(s), ${rep.skipped} ignorado(s)`);
+      }
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
+
+  async function downloadTemplate() {
+    const { accessToken } = useAuth.getState();
+    const res = await fetch(`${API_URL}/api/import/template/contacts`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!res.ok) return toast.error('Falha ao baixar o modelo');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'modelo-contatos.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function close() {
+    setFile(null);
+    setReport(null);
+    onClose();
+  }
+
+  return (
+    <Modal open={open} onClose={close} title="Importar contatos (CSV)">
+      <div className="space-y-4">
+        <div className="flex items-center justify-between rounded-xl border border-white/10 bg-surface px-4 py-3">
+          <div className="flex items-center gap-2 text-xs text-muted">
+            <FileSpreadsheet size={15} /> Use o modelo para garantir os cabeçalhos corretos.
+          </div>
+          <button onClick={downloadTemplate} className="flex items-center gap-1.5 text-xs text-fg hover:underline">
+            <Download size={13} /> Baixar modelo
+          </button>
+        </div>
+
+        <Field label="Arquivo CSV" hint="Até 5.000 linhas · colunas: nome, email, telefone, cargo, empresa, origem…">
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={(e) => {
+              setFile(e.target.files?.[0] ?? null);
+              setReport(null);
+            }}
+            className="block w-full text-xs text-muted file:mr-3 file:rounded-lg file:border-0 file:bg-elevated file:px-3 file:py-2 file:text-xs file:text-fg"
+          />
+        </Field>
+
+        {report && (
+          <div className="space-y-2 rounded-xl border border-white/10 bg-surface p-4 text-sm">
+            <p className="flex items-center gap-2 font-medium text-fg">
+              <CheckCircle2 size={15} className="text-success" />
+              {report.dryRun ? 'Pré-visualização' : 'Importação concluída'}
+            </p>
+            <p className="text-xs text-muted">
+              {report.total} linha(s) · {report.created} {report.dryRun ? 'seriam criadas' : 'criadas'} · {report.skipped} ignorada(s)
+            </p>
+            {report.errors.length > 0 && (
+              <div className="space-y-1 pt-1">
+                <p className="flex items-center gap-2 text-xs font-medium text-warning">
+                  <AlertTriangle size={13} /> {report.errors.length} erro(s)
+                </p>
+                <ul className="max-h-32 space-y-0.5 overflow-y-auto text-xs text-faint">
+                  {report.errors.map((err) => (
+                    <li key={err.line}>Linha {err.line}: {err.message}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" onClick={close}>
+            Fechar
+          </Button>
+          <Button type="button" variant="secondary" disabled={!file || run.isPending} onClick={() => file && run.mutate({ f: file, dryRun: true })}>
+            Pré-visualizar
+          </Button>
+          <Button type="button" disabled={!file || run.isPending} onClick={() => file && run.mutate({ f: file, dryRun: false })}>
+            {run.isPending ? 'Processando…' : 'Importar'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

@@ -185,3 +185,25 @@ export const LEAD_STATUS_LABELS: Record<LeadStatus, string> = {
   CONVERTIDO: 'Convertido',
   PERDIDO: 'Perdido',
 };
+
+export const PLANS = [
+  { code: 'trial', name: 'Teste', priceCents: 0, maxUsers: 3, features: ['CRM básico', 'Agenda', 'Tarefas'] },
+  { code: 'starter', name: 'Starter', priceCents: 9700, maxUsers: 5, features: ['CRM completo', 'Automações', 'Arquivos 5GB'] },
+  { code: 'pro', name: 'Pro', priceCents: 24700, maxUsers: 20, features: ['Tudo do Starter', 'Relatórios avançados', 'API pública', 'Arquivos 50GB'] },
+  { code: 'business', name: 'Business', priceCents: 49700, maxUsers: 100, features: ['Tudo do Pro', 'LGPD e auditoria', 'SSO', 'Arquivos 500GB'] },
+] as const;
+export type PlanCode = (typeof PLANS)[number]['code'];
+
+export function planByCode(code: string) {
+  return PLANS.find((p) => p.code === code) ?? PLANS[0];
+}
+
+export const SUBSCRIPTION_STATUSES = ['TRIAL', 'ACTIVE', 'PAST_DUE', 'CANCELED'] as const;
+export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
+export const SUBSCRIPTION_STATUS_LABELS: Record<SubscriptionStatus, string> = {
+  TRIAL: 'Em teste',
+  ACTIVE: 'Ativa',
+  PAST_DUE: 'Pagamento pendente',
+  CANCELED: 'Cancelada',
+};
+

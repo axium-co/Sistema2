@@ -611,6 +611,104 @@ export class RoutinesService {
     };
   }
 
+  /**
+   * Estatísticas de adesão às rotinas em uma janela de dias: taxa geral, série
+   * diária e, por rotina, taxa de conclusão, sequência atual/melhor sequência e
+   * último dia concluído. Dias não agendados não quebram a sequência.
+   */
+  async routineStats(userId: string, daysInput?: number) {
+    const days = Math.min(Math.max(Number(daysInput) || 30, 1), 90);
+    const today = toUtcDate();
+    const from = new Date(today.getTime() - (days - 1) * 86400000);
+
+    const runs = await this.prisma.db.routineRun.findMany({
+      where: { userId, runDate: { gte: from, lte: today } },
+      include: {
+        routine: { select: { id: true, name: true, frequency: true, weekdays: true, dayOfMonth: true, defaultTime: true } },
+      },
+    });
+
+    const dates: string[] = [];
+    for (let t = from.getTime(); t <= today.getTime(); t += 86400000) dates.push(dateKey(new Date(t)));
+
+    const byDate = new Map<string, { total: number; done: number }>(dates.map((d) => [d, { total: 0, done: 0 }]));
+    const byRoutine = new Map<string, { info: any; statuses: Map<string, string> }>();
+
+    for (const run of runs as any[]) {
+      const key = dateKey(run.runDate);
+      const day = byDate.get(key);
+      if (day) {
+        day.total += 1;
+        if (run.status === 'DONE') day.done += 1;
+      }
+      if (!byRoutine.has(run.routineId)) {
+        byRoutine.set(run.routineId, { info: run.routine, statuses: new Map() });
+      }
+      byRoutine.get(run.routineId)!.statuses.set(key, run.status);
+    }
+
+    const routines = [...byRoutine.values()]
+      .map(({ info, statuses }) => {
+        const total = statuses.size;
+        const done = [...statuses.values()].filter((s) => s === 'DONE').length;
+        let streak = 0;
+        for (let i = dates.length - 1; i >= 0; i--) {
+          const date = new Date(`${dates[i]}T00:00:00.000Z`);
+          if (!this.routineMatchesDate(info, date)) continue;
+          if (statuses.get(dates[i]) === 'DONE') streak += 1;
+          else break;
+        }
+        let bestStreak = 0;
+        let current = 0;
+        let lastDone: string | null = null;
+        for (const key of dates) {
+          const date = new Date(`${key}T00:00:00.000Z`);
+          if (!this.routineMatchesDate(info, date)) continue;
+          if (statuses.get(key) === 'DONE') {
+            current += 1;
+            bestStreak = Math.max(bestStreak, current);
+            lastDone = key;
+          } else {
+            current = 0;
+          }
+        }
+        return {
+          id: info.id,
+          name: info.name,
+          frequency: info.frequency,
+          defaultTime: info.defaultTime,
+          total,
+          done,
+          rate: total ? done / total : 0,
+          streak,
+          bestStreak,
+          lastDone,
+        };
+      })
+      .sort((a, b) => b.streak - a.streak || b.rate - a.rate);
+
+    const daily = dates.map((date) => ({ date, ...byDate.get(date)! }));
+    const total = daily.reduce((acc, d) => acc + d.total, 0);
+    const done = daily.reduce((acc, d) => acc + d.done, 0);
+
+    let streak = 0;
+    for (let i = daily.length - 1; i >= 0; i--) {
+      const day = daily[i];
+      if (day.total === 0) continue;
+      if (day.done === day.total) streak += 1;
+      else break;
+    }
+
+    return {
+      days,
+      from: dateKey(from),
+      to: dateKey(today),
+      overall: { total, done, rate: total ? done / total : 0, streak },
+      daily,
+      routines,
+    };
+  }
+
   async weeklyReview(userId: string) {
     const today = toUtcDate();
     const weekStart = new Date(today);

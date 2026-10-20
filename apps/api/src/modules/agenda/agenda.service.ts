@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { RRule } from 'rrule';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../common/audit.service';
@@ -6,9 +6,38 @@ import { NotificationsService } from '../notifications/notifications.service';
 import type { EventDto, UpdateEventDto } from './agenda.dto';
 
 const MAX_OCCURRENCES = 300;
+const EVENT_STATUSES = ['CONFIRMED', 'TENTATIVE', 'CANCELLED'];
+/** Janela padrão de expansão quando a listagem não informa `from`/`to`. */
+const DEFAULT_WINDOW_MS = 365 * 24 * 60 * 60 * 1000;
 
 function toDtStart(date: Date) {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+}
+
+/** Valida uma regra RRULE antes de persistir (lança 400 se inválida). */
+function assertValidRecurrence(rule?: string | null) {
+  if (!rule) return;
+  try {
+    RRule.fromString(`DTSTART:20240101T000000Z\nRRULE:${String(rule).replace(/^RRULE:/i, '')}`);
+  } catch {
+    throw new BadRequestException('Regra de recorrência (RRULE) inválida');
+  }
+}
+
+/**
+ * Interpreta ids sintéticos de ocorrência gerados na expansão de séries
+ * (`{eventoId}__{ISO}`), devolvendo o id real do evento-mestre e a data da ocorrência.
+ */
+function parseEventId(id: string): { masterId: string; occurrence?: Date } {
+  const sep = id.lastIndexOf('__');
+  if (sep > 0) {
+    const raw = id.slice(sep + 2);
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/.test(raw)) {
+      const occurrence = new Date(raw);
+      if (!Number.isNaN(occurrence.getTime())) return { masterId: id.slice(0, sep), occurrence };
+    }
+  }
+  return { masterId: id };
 }
 
 @Injectable()
@@ -37,8 +66,10 @@ export class AgendaService {
   } as const;
 
   async listEvents(params: { from?: string; to?: string; userId?: string; dealId?: string }) {
-    const from = params.from ? new Date(params.from) : undefined;
-    const to = params.to ? new Date(params.to) : undefined;
+    let from = params.from ? new Date(params.from) : undefined;
+    let to = params.to ? new Date(params.to) : undefined;
+    if (!from && to) from = new Date(to.getTime() - DEFAULT_WINDOW_MS);
+    if (!to && from) to = new Date(from.getTime() + DEFAULT_WINDOW_MS);
 
     const base: any = { deletedAt: null };
     if (params.dealId) base.dealId = params.dealId;
@@ -65,45 +96,57 @@ export class AgendaService {
     });
 
     if (!from || !to) return events;
-    return this.expandRecurrences(events, from, to);
-  }
 
-  /** Expande eventos recorrentes (RRULE) em ocorrências dentro de um intervalo. */
-  private expandRecurrences(events: any[], from: Date, to: Date) {
     const expanded: any[] = [];
     for (const event of events) {
-      if (!event.recurrenceRule) {
-        expanded.push(event);
-        continue;
-      }
-      try {
-        const startsAt = new Date(event.startsAt);
-        const duration = new Date(event.endsAt).getTime() - startsAt.getTime();
-        const rrule = `RRULE:${String(event.recurrenceRule).replace(/^RRULE:/i, '')}`;
-        const rule = RRule.fromString(`DTSTART:${toDtStart(startsAt)}\n${rrule}`);
-        const occurrences = rule.between(from, to, true).slice(0, MAX_OCCURRENCES);
-        for (const occurrence of occurrences) {
-          expanded.push({
-            ...event,
-            id: `${event.id}__${occurrence.toISOString()}`,
-            startsAt: occurrence,
-            endsAt: new Date(occurrence.getTime() + duration),
-            isRecurring: true,
-            masterEventId: event.id,
-          });
-        }
-      } catch {
-        expanded.push(event);
-      }
+      if (!event.recurrenceRule) expanded.push(event);
+      else expanded.push(...this.expandEvent(event, from, to));
     }
     expanded.sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
     return expanded;
   }
 
+  /**
+   * Expande um evento recorrente (RRULE) em ocorrências dentro de `[from, to]`,
+   * removendo as datas excluídas (`excludedDates`/EXDATE). Cada ocorrência recebe
+   * um id sintético `{eventoId}__{ISO}`. Em erro de parsing, devolve o próprio
+   * evento original (fail-soft).
+   */
+  private expandEvent(event: any, from: Date, to: Date): any[] {
+    const excluded = new Set<string>(Array.isArray(event.excludedDates) ? event.excludedDates : []);
+    try {
+      const startsAt = new Date(event.startsAt);
+      const duration = new Date(event.endsAt).getTime() - startsAt.getTime();
+      const rrule = `RRULE:${String(event.recurrenceRule).replace(/^RRULE:/i, '')}`;
+      const rule = RRule.fromString(`DTSTART:${toDtStart(startsAt)}\n${rrule}`);
+      const occurrences = rule.between(from, to, true).slice(0, MAX_OCCURRENCES);
+      return occurrences
+        .filter((occurrence) => !excluded.has(occurrence.toISOString()))
+        .map((occurrence) => ({
+          ...event,
+          id: `${event.id}__${occurrence.toISOString()}`,
+          startsAt: occurrence,
+          endsAt: new Date(occurrence.getTime() + duration),
+          isRecurring: true,
+          masterEventId: event.id,
+        }));
+    } catch {
+      return [event];
+    }
+  }
+
+  /** Aceita id real ou id sintético de ocorrência (`{eventoId}__{ISO}`). */
   async getEvent(id: string) {
-    return this.prisma.findByIdOrFail('event', id, {
-      include: { attendees: { include: { user: true, contact: true } }, deal: true, calendar: true },
-    });
+    const { masterId, occurrence } = parseEventId(id);
+    const include = { attendees: { include: { user: true, contact: true } }, deal: true, calendar: true } as const;
+    if (!occurrence) {
+      return this.prisma.findByIdOrFail('event', masterId, { include });
+    }
+    const master = await this.prisma.findByIdOrFail('event', masterId, { include });
+    if (!master.recurrenceRule) throw new NotFoundException('Este evento não é recorrente');
+    const [found] = this.expandEvent(master, occurrence, occurrence);
+    if (!found) throw new NotFoundException('Ocorrência não encontrada');
+    return found;
   }
 
   async createEvent(dto: EventDto, userId: string) {
@@ -115,6 +158,7 @@ export class AgendaService {
     if (endsAt <= startsAt) {
       throw new BadRequestException('A data de término deve ser após o início');
     }
+    assertValidRecurrence(dto.recurrenceRule);
 
     let calendarId = dto.calendarId;
     if (!calendarId) {
@@ -179,34 +223,154 @@ export class AgendaService {
   }
 
   async updateEvent(id: string, dto: UpdateEventDto) {
-    const event = await this.prisma.findByIdOrFail('event', id);
-    if (!event) throw new BadRequestException('Evento não encontrado');
+    const { masterId, occurrence } = parseEventId(id);
+    const event = await this.prisma.findByIdOrFail('event', masterId, { include: { attendees: true } });
+    if (dto.recurrenceRule !== undefined) assertValidRecurrence(dto.recurrenceRule);
+    if (dto.status !== undefined && !EVENT_STATUSES.includes(dto.status)) {
+      throw new BadRequestException('Status de evento inválido');
+    }
+    if (occurrence) return this.updateOccurrence(event, occurrence, dto);
+
     const data: any = { ...dto };
     if (dto.startsAt) data.startsAt = new Date(dto.startsAt);
     if (dto.endsAt) data.endsAt = new Date(dto.endsAt);
-    const updated = await this.prisma.db.event.update({ where: { id }, data });
-    await this.audit.log({ entityType: 'Event', entityId: id, action: 'UPDATE', after: dto });
-    return updated;
+    if (dto.attendees) {
+      data.attendees = {
+        deleteMany: {},
+        create: dto.attendees.map((a) => ({ userId: a.userId ?? null, contactId: a.contactId ?? null })),
+      };
+    }
+    const startsAt = data.startsAt ?? new Date(event.startsAt);
+    const endsAt = data.endsAt ?? new Date(event.endsAt);
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+      throw new BadRequestException('Datas inválidas');
+    }
+    if (endsAt <= startsAt) {
+      throw new BadRequestException('A data de término deve ser após o início');
+    }
+    const updated = await this.prisma.db.event.update({
+      where: { id: masterId },
+      data,
+      include: { attendees: true },
+    });
+    const conflicts = await this.findConflicts(event.calendarId, startsAt, endsAt, masterId);
+    await this.audit.log({ entityType: 'Event', entityId: masterId, action: 'UPDATE', after: dto });
+    return { ...updated, conflicts };
+  }
+
+  /**
+   * Edita apenas uma ocorrência da série: cria um evento pontual com os valores
+   * editados e exclui a ocorrência original da repetição (EXDATE), de modo que a
+   * série deixa de gerá-la e a edição passa a valer isoladamente.
+   */
+  private async updateOccurrence(event: any, occurrence: Date, dto: UpdateEventDto) {
+    if (!event.recurrenceRule) throw new BadRequestException('Este evento não é recorrente');
+
+    const duration = new Date(event.endsAt).getTime() - new Date(event.startsAt).getTime();
+    const startsAt = dto.startsAt ? new Date(dto.startsAt) : occurrence;
+    const endsAt = dto.endsAt ? new Date(dto.endsAt) : new Date(startsAt.getTime() + duration);
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+      throw new BadRequestException('Datas inválidas');
+    }
+    if (endsAt <= startsAt) throw new BadRequestException('A data de término deve ser após o início');
+
+    const exception = await this.prisma.db.event.create({
+      data: {
+        title: dto.title ?? event.title,
+        description: dto.description ?? event.description,
+        type: dto.type ?? event.type,
+        color: dto.color ?? event.color,
+        startsAt,
+        endsAt,
+        allDay: dto.allDay ?? event.allDay,
+        location: dto.location ?? event.location,
+        videoLink: dto.videoLink ?? event.videoLink,
+        status: (dto.status as any) ?? event.status,
+        dealId: event.dealId,
+        calendarId: event.calendarId,
+        createdById: event.createdById,
+        recurrenceRule: null,
+        reminderMinutes: dto.reminderMinutes ?? event.reminderMinutes,
+        attendees: dto.attendees
+          ? { create: dto.attendees.map((a) => ({ userId: a.userId ?? null, contactId: a.contactId ?? null })) }
+          : event.attendees?.length
+            ? { create: event.attendees.map((a: any) => ({ userId: a.userId, contactId: a.contactId })) }
+            : undefined,
+      },
+    });
+
+    await this.excludeOccurrence(event, occurrence);
+
+    const conflicts = await this.findConflicts(event.calendarId, startsAt, endsAt, event.id);
+    await this.audit.log({ entityType: 'Event', entityId: exception.id, action: 'CREATE', after: dto });
+    return { ...exception, conflicts: conflicts.filter((c: any) => c.id !== exception.id) };
+  }
+
+  /** Marca uma ocorrência como excluída (EXDATE) na série recorrente. */
+  private async excludeOccurrence(event: any, occurrence: Date) {
+    const iso = occurrence.toISOString();
+    if (Array.isArray(event.excludedDates) && event.excludedDates.includes(iso)) return;
+    await this.prisma.db.event.update({
+      where: { id: event.id },
+      data: { excludedDates: { push: iso } },
+    });
+    return iso;
   }
 
   async removeEvent(id: string) {
-    await this.prisma.findByIdOrFail('event', id);
-    await this.prisma.db.event.update({ where: { id }, data: { deletedAt: new Date() } });
-    await this.audit.log({ entityType: 'Event', entityId: id, action: 'DELETE' });
+    const { masterId, occurrence } = parseEventId(id);
+    const event = await this.prisma.findByIdOrFail('event', masterId);
+    if (occurrence) {
+      if (!event.recurrenceRule) throw new BadRequestException('Este evento não é recorrente');
+      const iso = await this.excludeOccurrence(event, occurrence);
+      if (iso) {
+        await this.audit.log({ entityType: 'Event', entityId: masterId, action: 'UPDATE', after: { excludedOccurrence: iso } });
+      }
+      return { ok: true };
+    }
+    await this.prisma.db.event.update({ where: { id: masterId }, data: { deletedAt: new Date() } });
+    await this.audit.log({ entityType: 'Event', entityId: masterId, action: 'DELETE' });
     return { ok: true };
   }
 
   async findConflicts(calendarId: string, startsAt: Date, endsAt: Date, ignoreEventId?: string) {
-    return this.prisma.db.event.findMany({
-      where: {
-        calendarId,
-        deletedAt: null,
-        status: { not: 'CANCELLED' },
-        ...(ignoreEventId ? { id: { not: ignoreEventId } } : {}),
-        AND: [{ startsAt: { lt: endsAt } }, { endsAt: { gt: startsAt } }],
-      },
-      select: { id: true, title: true, startsAt: true, endsAt: true },
-    });
+    const base: any = {
+      calendarId,
+      deletedAt: null,
+      status: { not: 'CANCELLED' },
+      ...(ignoreEventId ? { id: { not: ignoreEventId } } : {}),
+    };
+
+    const [single, recurring] = await Promise.all([
+      this.prisma.db.event.findMany({
+        where: {
+          ...base,
+          recurrenceRule: null,
+          AND: [{ startsAt: { lt: endsAt } }, { endsAt: { gt: startsAt } }],
+        },
+        select: { id: true, title: true, startsAt: true, endsAt: true },
+      }),
+      this.prisma.db.event.findMany({
+        where: { ...base, recurrenceRule: { not: null }, startsAt: { lte: endsAt } },
+        select: { id: true, title: true, startsAt: true, endsAt: true, recurrenceRule: true, excludedDates: true },
+      }),
+    ]);
+
+    const conflicts: any[] = [...single];
+    for (const event of recurring) {
+      // A janela começa antes do novo evento para capturar ocorrências que
+      // iniciam antes mas ainda se sobrepõem (início + duração da série).
+      const duration = new Date(event.endsAt).getTime() - new Date(event.startsAt).getTime();
+      const expandFrom = new Date(startsAt.getTime() - Math.max(0, duration));
+      for (const occurrence of this.expandEvent(event, expandFrom, endsAt)) {
+        const occStart = new Date(occurrence.startsAt);
+        const occEnd = new Date(occurrence.endsAt);
+        if (occStart < endsAt && occEnd > startsAt) {
+          conflicts.push({ id: occurrence.id, title: event.title, startsAt: occStart, endsAt: occEnd });
+        }
+      }
+    }
+    return conflicts;
   }
 
   async suggestSlots(date: string, durationMinutes = 60) {

@@ -12,6 +12,7 @@ import {
   KanbanSquare,
   FolderOpen,
   ListChecks,
+  BarChart3,
   Settings,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -26,6 +27,7 @@ const nav = [
   { href: '/rotina', label: 'Rotina', icon: ListChecks },
   { href: '/tarefas', label: 'Tarefas', icon: KanbanSquare },
   { href: '/arquivos', label: 'Arquivos', icon: FolderOpen },
+  { href: '/relatorios', label: 'Relatórios', icon: BarChart3 },
 ];
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {

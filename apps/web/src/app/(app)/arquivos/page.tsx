@@ -2,13 +2,33 @@
 
 import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Upload, FolderPlus, FolderOpen, Download, Trash2, RotateCcw, FileText, Image as ImageIcon, File as FileIcon, X } from 'lucide-react';
+import { Upload, FolderPlus, FolderOpen, Download, Trash2, RotateCcw, FileText, Image as ImageIcon, File as FileIcon, X, Loader2, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { api, fileUrl } from '@/lib/api';
 import { PageHeader } from '@/components/layout/page-header';
-import { Button, Card, EmptyState, Field, Input, Modal, Skeleton } from '@/components/ui';
-import { formatDate } from '@/lib/labels';
+import { Badge, Button, Card, EmptyState, Field, Input, Modal, Skeleton } from '@/components/ui';
+import { formatDate, FILE_STATUS_LABELS } from '@/lib/labels';
 import { cn } from '@/lib/utils';
+
+const STATUS_COLORS: Record<string, string> = {
+  UPLOADING: '#BFA27C',
+  SCANNING: '#BFA27C',
+  AVAILABLE: '#8FBF9F',
+  QUARANTINED: '#C9A69B',
+  DELETED: '#71717A',
+};
+
+function StatusBadge({ status }: { status: string }) {
+  const color = STATUS_COLORS[status] ?? '#71717A';
+  const icon =
+    status === 'SCANNING' || status === 'UPLOADING' ? <Loader2 size={11} className="animate-spin" /> : status === 'QUARANTINED' ? <ShieldAlert size={11} /> : status === 'AVAILABLE' ? <ShieldCheck size={11} /> : null;
+  return (
+    <Badge color={color} className="gap-1">
+      {icon}
+      {FILE_STATUS_LABELS[status as keyof typeof FILE_STATUS_LABELS] ?? status}
+    </Badge>
+  );
+}
 
 function fileIcon(mime: string) {
   if (mime.startsWith('image/')) return <ImageIcon size={16} />;
@@ -28,26 +48,80 @@ export default function ArquivosPage() {
   const [folderId, setFolderId] = useState<string | undefined>();
   const [trash, setTrash] = useState(false);
   const [newFolder, setNewFolder] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ name: string; pct: number } | null>(null);
 
   const { data: folders } = useQuery({ queryKey: ['folders'], queryFn: () => api.get<any[]>('/api/files/folders') });
+  const { data: capabilities } = useQuery({
+    queryKey: ['files-capabilities'],
+    queryFn: () =>
+      api.get<{ driver: string; directUpload: boolean; chunkedUpload?: boolean; chunkSizeMb?: number; scanEnabled: boolean; maxSizeMb: number }>(
+        '/api/files/capabilities',
+      ),
+  });
   const { data, isLoading } = useQuery({
     queryKey: ['files', folderId, trash],
     queryFn: () => api.get<{ items: any[]; total: number }>(`/api/files?pageSize=100${folderId ? `&folderId=${folderId}` : ''}${trash ? '&trashed=true' : ''}`),
   });
 
+  const uploadChunked = async (file: File) => {
+    const mimeType = file.type || 'application/octet-stream';
+    const init = await api.post<{ uploadId: string; chunkSize: number; totalChunks: number }>('/api/files/uploads/init', {
+      name: file.name,
+      mimeType,
+      size: file.size,
+      folderId,
+    });
+    setProgress({ name: file.name, pct: 0 });
+    try {
+      for (let index = 0; index < init.totalChunks; index++) {
+        const start = index * init.chunkSize;
+        const part = file.slice(start, Math.min(start + init.chunkSize, file.size));
+        for (let attempt = 0; ; attempt++) {
+          try {
+            const fd = new FormData();
+            fd.append('chunk', part, `${file.name}.part${index}`);
+            await api.post(`/api/files/uploads/${init.uploadId}/chunks/${index}`, fd);
+            break;
+          } catch (err) {
+            if (attempt >= 2) throw err;
+          }
+        }
+        setProgress({ name: file.name, pct: Math.round(((index + 1) / init.totalChunks) * 100) });
+      }
+      return await api.post(`/api/files/uploads/${init.uploadId}/complete`);
+    } catch (err) {
+      await api.del(`/api/files/uploads/${init.uploadId}`).catch(() => undefined);
+      throw err;
+    }
+  };
+
   const upload = useMutation({
-    mutationFn: (file: File) => {
+    mutationFn: async (file: File) => {
+      if (capabilities?.directUpload) {
+        const presign = await api.post<{ id: string; uploadUrl: string; method: string; headers: Record<string, string> }>('/api/files/presign', {
+          name: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          folderId,
+        });
+        const put = await fetch(presign.uploadUrl, { method: presign.method || 'PUT', headers: presign.headers, body: file });
+        if (!put.ok) throw new Error('Falha ao enviar o arquivo para o storage');
+        return api.post(`/api/files/${presign.id}/complete`);
+      }
+      if (capabilities?.chunkedUpload && file.size > (capabilities.chunkSizeMb ?? 5) * 1024 * 1024) {
+        return uploadChunked(file);
+      }
       const fd = new FormData();
       fd.append('file', file);
       if (folderId) fd.append('folderId', folderId);
       return api.post('/api/files/upload', fd);
     },
     onSuccess: () => {
-      toast.success('Arquivo enviado');
+      toast.success('Arquivo enviado — verificação de segurança em andamento');
       qc.invalidateQueries({ queryKey: ['files'] });
       qc.invalidateQueries({ queryKey: ['folders'] });
     },
     onError: (e: any) => toast.error(e.message),
+    onSettled: () => setProgress(null),
   });
 
   const createFolder = useMutation({
@@ -62,6 +136,7 @@ export default function ArquivosPage() {
   const trashFile = useMutation({ mutationFn: (id: string) => api.post(`/api/files/${id}/trash`), onSuccess: () => qc.invalidateQueries({ queryKey: ['files'] }) });
   const restoreFile = useMutation({ mutationFn: (id: string) => api.post(`/api/files/${id}/restore`), onSuccess: () => qc.invalidateQueries({ queryKey: ['files'] }) });
   const purgeFile = useMutation({ mutationFn: (id: string) => api.del(`/api/files/${id}`), onSuccess: () => qc.invalidateQueries({ queryKey: ['files'] }) });
+  const rescanFile = useMutation({ mutationFn: (id: string) => api.post(`/api/files/${id}/rescan`), onSuccess: () => qc.invalidateQueries({ queryKey: ['files'] }) });
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault();
@@ -86,6 +161,18 @@ export default function ArquivosPage() {
         }
       />
       <input ref={inputRef} type="file" multiple className="hidden" onChange={(e) => Array.from(e.target.files ?? []).forEach((f) => upload.mutate(f))} />
+
+      {progress && (
+        <div className="mx-6 mb-4 lg:mx-8">
+          <div className="flex items-center justify-between text-xs text-muted">
+            <span className="truncate">Enviando {progress.name}</span>
+            <span>{progress.pct}%</span>
+          </div>
+          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+            <div className="h-full rounded-full bg-fg/70 transition-all" style={{ width: `${progress.pct}%` }} />
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-6 px-6 lg:grid-cols-[220px_1fr] lg:px-8">
         <div className="space-y-1">
@@ -145,6 +232,7 @@ export default function ArquivosPage() {
               <thead>
                 <tr className="border-b border-white/5 text-left text-eyebrow uppercase text-faint">
                   <th className="px-5 py-3 font-medium">Arquivo</th>
+                  <th className="px-5 py-3 font-medium">Status</th>
                   <th className="px-5 py-3 font-medium">Tamanho</th>
                   <th className="px-5 py-3 font-medium">Enviado</th>
                   <th className="px-5 py-3" />
@@ -161,6 +249,9 @@ export default function ArquivosPage() {
                           <p className="text-xs text-faint">{f.folder?.name ?? 'Sem pasta'}</p>
                         </div>
                       </div>
+                    </td>
+                    <td className="px-5 py-3">
+                      <StatusBadge status={f.status} />
                     </td>
                     <td className="px-5 py-3 text-muted">{humanSize(Number(f.sizeBytes))}</td>
                     <td className="px-5 py-3 text-muted">
@@ -180,9 +271,16 @@ export default function ArquivosPage() {
                           </>
                         ) : (
                           <>
-                            <a href={fileUrl(f.id, true)} className="rounded-lg p-1.5 text-muted hover:bg-white/5 hover:text-fg" title="Baixar">
-                              <Download size={14} />
-                            </a>
+                            {f.status === 'AVAILABLE' && (
+                              <a href={fileUrl(f.id, true)} className="rounded-lg p-1.5 text-muted hover:bg-white/5 hover:text-fg" title="Baixar">
+                                <Download size={14} />
+                              </a>
+                            )}
+                            {f.status === 'QUARANTINED' && (
+                              <button onClick={() => rescanFile.mutate(f.id)} className="rounded-lg p-1.5 text-muted hover:bg-white/5 hover:text-fg" title="Verificar novamente">
+                                <RotateCcw size={14} />
+                              </button>
+                            )}
                             <button onClick={() => trashFile.mutate(f.id)} className="rounded-lg p-1.5 text-muted hover:bg-danger/10 hover:text-danger" title="Mover para lixeira">
                               <Trash2 size={14} />
                             </button>

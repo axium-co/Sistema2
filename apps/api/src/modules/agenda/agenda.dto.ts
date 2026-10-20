@@ -35,5 +35,7 @@ export class UpdateEventDto {
   @IsOptional() @IsString() location?: string;
   @IsOptional() @IsString() videoLink?: string;
   @IsOptional() @IsString() status?: string;
+  @IsOptional() @IsString() recurrenceRule?: string | null;
   @IsOptional() @IsInt() reminderMinutes?: number;
+  @IsOptional() @IsArray() attendees?: AttendeeDto[];
 }

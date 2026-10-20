@@ -15,6 +15,7 @@ import {
   PlayCircle,
   StopCircle,
   CircleDot,
+  TrendingUp,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { addDays, format, subDays } from 'date-fns';
@@ -51,7 +52,7 @@ function CheckBox({ checked, onToggle }: { checked: boolean; onToggle: () => voi
 
 export default function RotinaPage() {
   const qc = useQueryClient();
-  const [tab, setTab] = useState<'hoje' | 'rotinas' | 'habitos' | 'foco'>('hoje');
+  const [tab, setTab] = useState<'hoje' | 'rotinas' | 'habitos' | 'foco' | 'desempenho'>('hoje');
   const [date, setDate] = useState(() => new Date());
 
   // Hoje
@@ -146,6 +147,12 @@ export default function RotinaPage() {
     },
   });
 
+  const { data: routineStats } = useQuery({
+    queryKey: ['routine-stats'],
+    queryFn: () => api.get<any>(`/api/routines/stats?days=30`),
+    enabled: tab === 'desempenho',
+  });
+
   const [routineItems, setRoutineItems] = useState<string[]>(['']);
   const [routineWeekdays, setRoutineWeekdays] = useState<string[]>([]);
 
@@ -162,6 +169,7 @@ export default function RotinaPage() {
               { id: 'rotinas', label: 'Rotinas' },
               { id: 'habitos', label: 'Habitos' },
               { id: 'foco', label: 'Foco' },
+              { id: 'desempenho', label: 'Desempenho' },
             ].map((t) => (
               <button
                 key={t.id}
@@ -424,6 +432,82 @@ export default function RotinaPage() {
                     <p className="text-lg font-semibold">{focusStats.weekMinutes} min • {focusStats.weekSessions} sessoes</p>
                   </div>
                 </div>
+              )}
+            </Card>
+          </div>
+        )}
+
+        {tab === 'desempenho' && (
+          <div className="space-y-4">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Card className="p-5">
+                <p className="text-[11px] uppercase tracking-wide text-faint">Adesão (30 dias)</p>
+                <p className="mt-1 text-2xl font-semibold">
+                  {routineStats ? `${Math.round(routineStats.overall.rate * 100)}%` : '—'}
+                </p>
+                <p className="text-[11px] text-faint">
+                  {routineStats ? `${routineStats.overall.done}/${routineStats.overall.total} execuções` : ''}
+                </p>
+              </Card>
+              <Card className="p-5">
+                <p className="text-[11px] uppercase tracking-wide text-faint">Sequência atual</p>
+                <p className="mt-1 flex items-center gap-2 text-2xl font-semibold">
+                  <Flame size={18} className="text-warning" /> {routineStats?.overall.streak ?? 0}
+                </p>
+                <p className="text-[11px] text-faint">dias seguidos 100% concluídos</p>
+              </Card>
+              <Card className="p-5">
+                <p className="text-[11px] uppercase tracking-wide text-faint">Rotinas ativas</p>
+                <p className="mt-1 text-2xl font-semibold">{routineStats?.routines?.length ?? 0}</p>
+                <p className="text-[11px] text-faint">com execuções no período</p>
+              </Card>
+            </div>
+
+            <Card className="p-6">
+              <div className="mb-4 flex items-center justify-between">
+                <p className="text-sm font-semibold">Conclusão diária</p>
+                <TrendingUp size={15} className="text-muted" />
+              </div>
+              {!routineStats ? (
+                <Skeleton className="h-24" />
+              ) : (
+                <div className="flex h-28 items-end gap-1">
+                  {routineStats.daily.map((d: any) => {
+                    const pct = d.total ? d.done / d.total : 0;
+                    return (
+                      <div key={d.date} className="group relative flex-1" title={`${d.date}: ${d.done}/${d.total}`}>
+                        <div className="w-full rounded-sm bg-white/5" style={{ height: 96 }}>
+                          <div
+                            className="w-full rounded-sm bg-success/70 transition-all group-hover:bg-success"
+                            style={{ height: `${Math.max(pct * 96, d.total ? 4 : 0)}px`, marginTop: 96 - Math.max(pct * 96, d.total ? 4 : 0) }}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </Card>
+
+            <Card className="divide-y divide-white/5">
+              {routineStats?.routines?.length ? (
+                routineStats.routines.map((r: any) => (
+                  <div key={r.id} className="flex items-center justify-between px-6 py-3.5">
+                    <div>
+                      <p className="text-sm font-medium">{r.name}</p>
+                      <p className="text-[11px] text-faint">
+                        {ROUTINE_FREQUENCY_LABELS[r.frequency as keyof typeof ROUTINE_FREQUENCY_LABELS] ?? r.frequency} •{' '}
+                        {Math.round(r.rate * 100)}% ({r.done}/{r.total})
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-sm text-muted">
+                      <Flame size={14} className="text-warning" /> {r.streak}
+                      <span className="text-faint">/ melhor {r.bestStreak}</span>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <EmptyState title="Sem dados ainda" description="Conclua rotinas para ver suas estatísticas" />
               )}
             </Card>
           </div>

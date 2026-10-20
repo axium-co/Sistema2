@@ -16,13 +16,13 @@ import {
   SquareKanban,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { api, useAuth } from '@/lib/api';
+import { api, useAuth, API_URL } from '@/lib/api';
 import { Avatar, Badge, Button } from '@/components/ui';
 import { cn, formatDate } from '@/lib/utils';
 
 export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
   const router = useRouter();
-  const { user, logout } = useAuth();
+  const { user, logout, accessToken } = useAuth();
   const qc = useQueryClient();
   const [q, setQ] = useState('');
   const [openSearch, setOpenSearch] = useState(false);
@@ -40,10 +40,32 @@ export function Topbar({ onOpenMenu }: { onOpenMenu: () => void }) {
   const { data: notifs } = useQuery({
     queryKey: ['notifications'],
     queryFn: () => api.get<any[]>('/api/notifications'),
-    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
   });
 
   const unread = (notifs ?? []).filter((n) => !n.read).length;
+
+  useEffect(() => {
+    if (!accessToken) return;
+    const source = new EventSource(`${API_URL}/api/notifications/stream?token=${accessToken}`);
+    source.onmessage = (e) => {
+      try {
+        const event = JSON.parse(e.data);
+        if (event.type === 'connected' || event.type === 'ping') return;
+        if (event.type === 'file.scan') {
+          qc.invalidateQueries({ queryKey: ['files'] });
+          if (event.status === 'QUARANTINED') {
+            toast.warning(`Arquivo "${event.fileName}" bloqueado pela verificação de segurança`);
+          }
+          return;
+        }
+        qc.invalidateQueries({ queryKey: ['notifications'] });
+      } catch {
+        /* payload malformado: ignora */
+      }
+    };
+    return () => source.close();
+  }, [accessToken, qc]);
 
   useEffect(() => {
     const onClick = (e: MouseEvent) => {

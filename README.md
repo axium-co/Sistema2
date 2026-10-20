@@ -28,7 +28,7 @@ axium/
 ├─ apps/
 │  ├─ api/                 # API NestJS
 │  │  ├─ prisma/           # schema + migrações + seed
-│  │  ├─ src/modules/      # auth, users, crm, agenda, boards, files, dashboard, notifications, search
+│  │  ├─ src/modules/      # auth, users, crm, agenda, routines, boards, files, dashboard, automations, lgpd, api-keys, billing, integrations, notifications, search, import
 │  │  ├─ src/common/       # tenant context, guards, RBAC, paginação, auditoria
 │  │  └─ test/             # testes (isolamento de tenant)
 │  └─ web/                 # Frontend Next.js
@@ -122,9 +122,19 @@ Também é possível criar uma empresa nova em `/cadastro` (cria automaticamente
 
 ## Roadmap
 
-- **Fase 2 — MVP (atual)**: autenticação/multi-tenant/RBAC, CRM (contatos, empresas, funis, negócios), Agenda, Tarefas (Kanban), Arquivos, Dashboard e design system.
-- **Fase 3**: Rotina/hábitos, integração **Google Calendar**, automações, campos personalizados, importação CSV.
-- **Fase 4**: Billing (**Asaas**), relatórios avançados, API pública, adequação **LGPD**.
+- **Fase 2 — MVP**: autenticação/multi-tenant/RBAC, CRM (contatos, empresas, funis, negócios), Agenda, Tarefas (Kanban), Arquivos, Dashboard e design system.
+- **Fase 3 (concluída)**: Rotina/hábitos (com estatísticas e sequências), integração **Google Calendar** (OAuth + sincronização), automações de CRM, campos personalizados, importação CSV.
+- **Fase 4 (concluída)**: Billing (**Asaas**), relatórios avançados, API pública (`/api/v1`) e adequação **LGPD**.
+
+---
+
+## Integrações e recursos avançados
+
+- **Automações de CRM**: regras quando/então por gatilho (`DEAL_WON`, `DEAL_LOST`, `DEAL_CREATED`, `LEAD_CREATED`) e ações (criar atividade/tarefa, notificar, atualizar negócio). CRUD em Configurações › CRM.
+- **LGPD**: consentimentos, solicitações do titular, exportação completa dos dados e anonimização/exclusão. Tudo auditado. Aba **Privacidade** em Configurações.
+- **API pública**: chaves com escopo `read`/`write` (formato `axk_...`, hash SHA-256) e endpoints em `/api/v1` (deals, contacts, pipelines) autenticados por `x-api-key`, com limite por minuto (`API_RATE_LIMIT_PER_MIN`). Aba **API** em Configurações.
+- **Billing (Asaas)**: assinaturas e faturas com webhook; sem `ASAAS_API_KEY` opera em **modo simulado**. Aba **Plano** em Configurações.
+- **Google Calendar**: OAuth por usuário, importação (idempotente por `externalId`) e exportação de eventos. Sem credenciais opera em **modo simulado**.
 
 ---
 
@@ -132,23 +142,31 @@ Também é possível criar uma empresa nova em `/cadastro` (cria automaticamente
 
 Itens funcionais deixados explicitamente para iterações seguintes:
 
-- **Scan antivírus de arquivos**: o status vai direto para `AVAILABLE` (sem etapa real de `SCANNING`).
-- **Upload**: usa buffer em memória; ainda sem upload multipart/chunked nem URLs pré-assinadas para S3 (o driver local é o padrão).
-- **MinIO**: as imagens `minio/minio` e `minio/mc` não estão disponíveis no registry local; o serviço está sob o profile `s3` no `docker-compose` e o storage padrão é `local`.
-- **2FA**: campo `twoFactorEnabled` existe no modelo, mas o fluxo não foi implementado.
-- **Recorrência de eventos**: `recurrenceRule` é armazenado, mas a expansão completa de RRULE ainda não é feita no backend.
-- **Convite de usuários**: adição direta por senha inicial (sem envio de e-mail de convite).
-- **Importação CSV**: ainda não disponível.
-- **Tempo real**: notificações por polling (30s); sem SSE/WebSocket.
-- **RLS do PostgreSQL**: o isolamento é garantido na camada de aplicação (Prisma extension); o enforcement por RLS a nível de transação ainda não está habilitado.
-- **Hash de senha**: `bcryptjs` (considerar migração para `argon2`).
-- **Regras futuras**: metas (`goals`), campos personalizados e produtos/itens de negócio já existem no schema, mas com UI/edição parcial.
+- **Scan antivírus de arquivos**: ciclo com estado `SCANNING` e evento `file.scan` (SSE). Usa **ClamAV** via `clamd` (INSTREAM) quando `CLAMAV_HOST` está definido, com fallback para verificação heurística local; `CLAMAV_STRICT=true` bloqueia o arquivo se o clamd estiver indisponível.
+- **Upload**: buffer em memória no driver local; com storage `s3` o frontend usa URL pré-assinada (`/api/files/presign`). **Upload chunked/resumível** disponível em `POST /api/files/uploads` (partes de `UPLOAD_CHUNK_SIZE_MB`).
+- **MinIO**: as imagens `minio/minio` e `minio/mc` não estão disponíveis no registry deste ambiente; o serviço fica sob o profile `s3` no `docker-compose` e o storage padrão é `local`. O driver S3 (endpoint + path-style + URL pré-assinada) é validado por `test/storage-s3.spec.ts`.
+- **2FA**: fluxo completo implementado (TOTP com QR Code, ativar/desativar em Configurações › Segurança e desafio no login).
+- **Recorrência de eventos**: expansão das ocorrências na listagem (janela padrão de 1 ano quando não há `from`/`to`), regras ricas na UI (frequência, intervalo, dias da semana, `COUNT`/`UNTIL`), remoção/edição de **uma única ocorrência** (EXDATE + evento pontual de exceção) e detecção de conflitos considerando séries. Limitações restantes: `BYMONTHDAY`/exceções por data (`RDATE`) fora do escopo e conflitos verificados apenas na criação.
+- **Convite de usuários**: convite por e-mail com token (validação/aceite em `/convite`). Sem SMTP configurado, o link é copiado automaticamente.
+- **Importação CSV**: disponível para contatos (template, modo `dryRun` e relatório de erros).
+- **Tempo real**: notificações por SSE (`/api/notifications/stream`), com fallback de invalidação no cliente.
+- **RLS do PostgreSQL**: enforcement habilitável via `RLS_ENABLED=true` — cada requisição autenticada roda em transação com `app.tenant_id` definido (`set_config`). Requer apontar `DATABASE_URL` para o papel `axium_app` e rodar `prisma/rls-enforce.sql`. A camada de aplicação (Prisma extension) continua ativa.
+- **Hash de senha**: `argon2` (`@node-rs/argon2`) com fallback para `bcryptjs` e rehash automático no login.
+- **Metas, campos personalizados e produtos/itens de negócio**: CRUD completo — produtos e itens no negócio, metas e campos personalizados editáveis em Configurações › CRM (aba **CRM**) e nos registros de contato/negócio.
+- **Relatórios avançados**: `GET /api/dashboard/reports?days=` (janela configurável) com tela dedicada em `relatorios`.
+- **Rotina — estatísticas**: `GET /api/routines/stats?days=` com taxa de adesão, sequência atual/melhor sequência por rotina e série diária, exibido na aba **Desempenho** da Rotina.
+- **Google Calendar sem credenciais**: `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` ausentes ⇒ modo simulado (auth-url e sync não fazem chamadas externas).
+- **Billing sem credenciais**: `ASAAS_API_KEY` ausente ⇒ modo simulado (checkout ativa o plano e emite fatura fictícia, sem chamadas externas).
+
+> **RLS opcional**: por padrão `RLS_ENABLED=false` e o isolamento por tenant é garantido na camada de aplicação. Ao habilitar o RLS, rotas públicas sem tenant (login/cadastro) dependem do mesmo papel de banco; valide o fluxo de autenticação no seu ambiente antes de ativar em produção.
 
 ---
 
 ## Testes
 
 ```bash
-npm test
-# apps/api → 5 testes de isolamento de tenant (Vitest)
+npm test          # apps/api → Vitest (13 arquivos, 62 testes) — requer PostgreSQL no ar
+npm run test -w @axium/web   # apps/web → Vitest (13 testes de recorrência)
 ```
+
+> Os testes da API exigem a infraestrutura do passo 3 (`npm run infra:up`); usam o banco `axium` e criam/limpam tenants isolados (`allowUnscoped`).

@@ -1,24 +1,44 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Trophy, XCircle, Building2, User, CalendarClock, MessageSquare, Activity as ActivityIcon } from 'lucide-react';
+import { Trophy, XCircle, Building2, User, CalendarClock, MessageSquare, Activity as ActivityIcon, Plus, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { Avatar, Badge, Button, Drawer, Field, Input, Textarea } from '@/components/ui';
 import { ACTIVITY_LABELS, DEAL_STATUS_LABELS, brl, formatDate, formatTime, toDateInput } from '@/lib/labels';
+import { CustomFieldsSection } from './custom-fields-section';
 
 export function DealDrawer({ dealId, onClose }: { dealId: string | null; onClose: () => void }) {
   const qc = useQueryClient();
   const [note, setNote] = useState('');
   const [lossOpen, setLossOpen] = useState(false);
   const [lossReason, setLossReason] = useState('');
+  const [items, setItems] = useState<any[]>([]);
 
   const { data: deal } = useQuery({
     queryKey: ['deal', dealId],
     queryFn: () => api.get<any>(`/api/deals/${dealId}`),
     enabled: !!dealId,
   });
+
+  const { data: products } = useQuery({
+    queryKey: ['products'],
+    queryFn: () => api.get<any[]>('/api/crm/products'),
+  });
+
+  useEffect(() => {
+    if (deal?.items) {
+      setItems(
+        deal.items.map((i: any) => ({
+          description: i.description,
+          quantity: i.quantity,
+          unitPrice: i.unitPrice,
+          productId: i.productId ?? null,
+        })),
+      );
+    }
+  }, [deal?.id]);
 
   const { data: timeline } = useQuery({
     queryKey: ['deal-timeline', dealId],
@@ -68,6 +88,20 @@ export function DealDrawer({ dealId, onClose }: { dealId: string | null; onClose
       toast.success('Atividade registrada');
     },
   });
+
+  const itemsTotal = items.reduce((s, i) => s + (Number(i.quantity) || 0) * (Number(i.unitPrice) || 0), 0);
+
+  function updateItem(idx: number, patch: any) {
+    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+  }
+
+  function pickProduct(idx: number, productId: string) {
+    const p = (products ?? []).find((x) => x.id === productId);
+    updateItem(idx, {
+      productId: productId || null,
+      ...(p ? { description: p.name, unitPrice: Number(p.price) } : {}),
+    });
+  }
 
   return (
     <Drawer
@@ -184,6 +218,71 @@ export function DealDrawer({ dealId, onClose }: { dealId: string | null; onClose
               </div>
             </div>
           </div>
+
+          <div className="border-t border-white/5 pt-4">
+            <div className="mb-2 flex items-center justify-between">
+              <span className="text-sm font-semibold text-fg">Itens do negócio</span>
+              <span className="text-sm text-muted">Total: {brl(itemsTotal)}</span>
+            </div>
+            <div className="space-y-2">
+              {items.length === 0 && <p className="text-xs text-faint">Nenhum item adicionado.</p>}
+              {items.map((it, idx) => (
+                <div key={idx} className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={it.productId ?? ''}
+                    onChange={(e) => pickProduct(idx, e.target.value)}
+                    className="w-36 rounded-xl border border-white/10 bg-surface px-3 py-2 text-xs text-fg focus:outline-none"
+                  >
+                    <option value="">Produto livre</option>
+                    {(products ?? []).map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                  <Input
+                    className="min-w-[8rem] flex-1"
+                    placeholder="Descrição"
+                    value={it.description}
+                    onChange={(e) => updateItem(idx, { description: e.target.value })}
+                  />
+                  <Input
+                    type="number"
+                    className="w-20"
+                    value={it.quantity}
+                    onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
+                  />
+                  <Input
+                    type="number"
+                    className="w-28"
+                    value={it.unitPrice}
+                    onChange={(e) => updateItem(idx, { unitPrice: Number(e.target.value) })}
+                  />
+                  <button
+                    onClick={() => setItems((prev) => prev.filter((_, i) => i !== idx))}
+                    className="rounded-lg p-1.5 text-muted hover:bg-danger/10 hover:text-danger"
+                    title="Remover item"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setItems((prev) => [...prev, { description: '', quantity: 1, unitPrice: 0, productId: null }])}
+              >
+                <Plus size={13} /> Adicionar item
+              </Button>
+              <Button size="sm" disabled={save.isPending} onClick={() => save.mutate({ items })}>
+                Salvar itens
+              </Button>
+            </div>
+          </div>
+
+          <CustomFieldsSection entityType="Deal" entityId={deal.id} />
 
           <div className="flex flex-wrap gap-2 border-t border-white/5 pt-4">
             {(['CALL', 'MEETING', 'EMAIL', 'WHATSAPP', 'VISIT'] as const).map((t) => (

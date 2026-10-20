@@ -72,6 +72,31 @@ export class StorageService {
     return this.driver === 's3';
   }
 
+  private get chunkRoot() {
+    return join(this.uploadDir, '.chunks');
+  }
+
+  async writeChunk(uploadId: string, index: number, data: Buffer): Promise<void> {
+    const dir = join(this.chunkRoot, uploadId);
+    mkdirSync(dir, { recursive: true });
+    await fs.writeFile(join(dir, `${index}.part`), data);
+  }
+
+  async assembleChunks(uploadId: string, count: number): Promise<Buffer> {
+    const dir = join(this.chunkRoot, uploadId);
+    const parts: Buffer[] = [];
+    for (let index = 0; index < count; index++) {
+      const part = join(dir, `${index}.part`);
+      if (!existsSync(part)) throw new Error(`Parte ${index} do upload não encontrada`);
+      parts.push(await fs.readFile(part));
+    }
+    return Buffer.concat(parts);
+  }
+
+  async removeChunks(uploadId: string): Promise<void> {
+    await fs.rm(join(this.chunkRoot, uploadId), { recursive: true, force: true });
+  }
+
   async delete(key: string): Promise<void> {
     if (this.driver === 's3') {
       await this

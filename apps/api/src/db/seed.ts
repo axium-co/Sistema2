@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import * as bcrypt from 'bcryptjs';
+import { hashPassword } from '../common/password';
 
 const prisma = new PrismaClient();
 
@@ -28,7 +28,7 @@ async function main() {
     data: { name: 'Nexo Soluções Comerciais', slug: 'nexo', planCode: 'pro' },
   });
 
-  const passwordHash = await bcrypt.hash('axium123', 10);
+  const passwordHash = await hashPassword('axium123');
 
   const ana = await prisma.user.create({
     data: {

@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../common/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AutomationsService } from '../automations/automations.service';
 import { paginate } from '../../common/pagination';
 import type { ActivityDto, DealDto, NoteDto, PipelineDto, StageDto } from './crm.dto';
 
@@ -11,6 +12,7 @@ export class DealsService {
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly notifications: NotificationsService,
+    private readonly automations: AutomationsService,
   ) {}
 
   // ---------- Pipelines & stages ----------
@@ -115,7 +117,7 @@ export class DealsService {
         company: true,
         primaryContact: true,
         owner: { select: { id: true, name: true } },
-        items: true,
+        items: { include: { product: { select: { id: true, name: true } } } },
         activities: { orderBy: { occurredAt: 'desc' } },
         stageHistory: { orderBy: { changedAt: 'desc' } },
       },
@@ -154,6 +156,7 @@ export class DealsService {
     });
 
     await this.audit.log({ entityType: 'Deal', entityId: deal.id, action: 'CREATE' });
+    await this.automations.run('DEAL_CREATED', deal);
     return deal;
   }
 
@@ -169,8 +172,33 @@ export class DealsService {
     if (dto.stageId) {
       data.stageId = dto.stageId;
     }
-    const updated = await this.prisma.db.deal.update({ where: { id }, data });
+    if (dto.items !== undefined) {
+      const items = dto.items;
+      data.items = {
+        deleteMany: {},
+        create: items.map((i) => ({
+          description: i.description,
+          quantity: i.quantity ?? 1,
+          unitPrice: i.unitPrice ?? 0,
+          productId: i.productId ?? null,
+        })),
+      };
+      if (dto.amount === undefined) {
+        data.amount = items.reduce((sum, i) => sum + (i.quantity ?? 1) * (i.unitPrice ?? 0), 0);
+      }
+    }
+    const updated = await this.prisma.db.deal.update({
+      where: { id },
+      data,
+      include: { items: { include: { product: { select: { id: true, name: true } } } } },
+    });
     await this.audit.log({ entityType: 'Deal', entityId: id, action: 'UPDATE', before: { stageId: deal.stageId }, after: dto });
+    if (dto.stageId && dto.stageId !== deal.stageId) {
+      await this.automations.run('DEAL_STAGE_CHANGED', updated, {
+        fromStageId: deal.stageId,
+        toStageId: dto.stageId,
+      });
+    }
     return updated;
   }
 
@@ -215,6 +243,18 @@ export class DealsService {
       },
     });
     await this.audit.log({ entityType: 'Deal', entityId: id, action: 'MOVE', before: { stageId: deal.stageId }, after: { stageId: dto.stageId, status: data.status } });
+
+    if (dto.stageId !== deal.stageId) {
+      await this.automations.run('DEAL_STAGE_CHANGED', updated, {
+        fromStageId: deal.stageId,
+        toStageId: dto.stageId,
+      });
+    }
+    if (data.status === 'GANHO') {
+      await this.automations.run('DEAL_WON', updated);
+    } else if (data.status === 'PERDIDO') {
+      await this.automations.run('DEAL_LOST', updated);
+    }
     return updated;
   }
 

@@ -58,6 +58,16 @@ services:
       mc mb -p local/axium-files || true
       "
 
+  clamav:
+    image: clamav/clamav:stable
+    profiles: ["antivirus"]
+    container_name: axium-clamav
+    ports:
+      - "3310:3310"
+    volumes:
+      - clamdb:/var/lib/clamav
+
 volumes:
   pgdata:
   miniodata:
+  clamdb:

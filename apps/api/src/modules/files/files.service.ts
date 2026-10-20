@@ -1,8 +1,9 @@
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../common/audit.service';
+import { EventBusService } from '../../common/event-bus.service';
 import { StorageService } from './storage.service';
 import { ScannerService } from './scanner.service';
 import { paginate } from '../../common/pagination';
@@ -35,11 +36,14 @@ function sanitizeName(name: string) {
 
 @Injectable()
 export class FilesService {
+  private readonly logger = new Logger('FilesService');
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
     private readonly storage: StorageService,
     private readonly scanner: ScannerService,
+    private readonly bus: EventBusService,
   ) {}
 
   async list(query: { search?: string; folderId?: string; trashed?: string; page?: number; pageSize?: number }) {
@@ -91,8 +95,7 @@ export class FilesService {
     const storageKey = `${randomUUID()}/${name}`;
     await this.storage.put(storageKey, file.buffer, file.mimetype);
 
-    const verdict = await this.scanner.scan(file.buffer, name, file.mimetype);
-    const status = verdict.clean ? 'AVAILABLE' : 'QUARANTINED';
+    const scanEnabled = process.env.FILE_SCAN_ENABLED !== 'false';
     const checksum = createHash('sha256').update(file.buffer).digest('hex');
 
     const created = await this.prisma.db.file.create({
@@ -103,10 +106,9 @@ export class FilesService {
         mimeType: file.mimetype,
         sizeBytes: BigInt(file.size),
         storageKey,
-        status,
+        status: scanEnabled ? 'SCANNING' : 'AVAILABLE',
         checksum,
-        scanResult: verdict.clean ? 'clean' : verdict.reason ?? 'suspeito',
-        scannedAt: new Date(),
+        ...(scanEnabled ? {} : { scanResult: 'verificação desabilitada', scannedAt: new Date() }),
         versions: {
           create: { version: 1, storageKey, sizeBytes: BigInt(file.size), uploadedBy: userId },
         },
@@ -120,6 +122,17 @@ export class FilesService {
     }
 
     await this.audit.log({ entityType: 'File', entityId: created.id, action: 'UPLOAD', after: { name } });
+
+    if (scanEnabled) {
+      this.scheduleScan({
+        fileId: created.id,
+        storageKey,
+        name,
+        mimeType: file.mimetype,
+        uploaderId: userId,
+        buffer: file.buffer,
+      });
+    }
     return this.serialize(created);
   }
 
@@ -143,9 +156,116 @@ export class FilesService {
     return {
       driver: this.storage.supportsDirectUpload ? 's3' : 'local',
       directUpload: this.storage.supportsDirectUpload,
+      chunkedUpload: true,
+      chunkSizeMb: this.chunkSizeBytes / (1024 * 1024),
       scanEnabled: process.env.FILE_SCAN_ENABLED !== 'false',
       maxSizeMb: MAX_FILE_SIZE_MB,
     };
+  }
+
+  private get chunkSizeBytes() {
+    const mb = Number(process.env.UPLOAD_CHUNK_SIZE_MB ?? 5);
+    return Math.max(1, Number.isFinite(mb) ? mb : 5) * 1024 * 1024;
+  }
+
+  /**
+   * Inicia um upload resumível: cria o registro UPLOADING e informa o tamanho
+   * das partes. As partes são gravadas em disco e montadas no `complete`.
+   */
+  async initChunkedUpload(params: {
+    name: string;
+    mimeType: string;
+    size: number;
+    userId: string;
+    folderId?: string;
+    entityType?: string;
+    entityId?: string;
+  }) {
+    if (!params.name) throw new BadRequestException('Nome do arquivo é obrigatório');
+    if (!Number.isFinite(params.size) || params.size <= 0) {
+      throw new BadRequestException('Tamanho do arquivo inválido');
+    }
+    if (params.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+      throw new BadRequestException(`Arquivo excede o limite de ${MAX_FILE_SIZE_MB} MB`);
+    }
+    if (!ALLOWED_MIME.has(params.mimeType)) {
+      throw new BadRequestException(`Tipo de arquivo não permitido: ${params.mimeType}`);
+    }
+
+    const name = sanitizeName(params.name);
+    const storageKey = `${randomUUID()}/${name}`;
+    const chunkSize = this.chunkSizeBytes;
+    const totalChunks = Math.max(1, Math.ceil(params.size / chunkSize));
+
+    const file = await this.prisma.db.file.create({
+      data: {
+        folderId: params.folderId ?? null,
+        uploadedBy: params.userId,
+        name,
+        mimeType: params.mimeType,
+        sizeBytes: BigInt(params.size),
+        storageKey,
+        status: 'UPLOADING',
+      },
+    });
+
+    if (params.entityType && params.entityId) {
+      await this.prisma.db.fileLink.create({
+        data: { fileId: file.id, entityType: params.entityType, entityId: params.entityId },
+      });
+    }
+
+    return { ...this.serialize(file), uploadId: file.id, chunkSize, totalChunks };
+  }
+
+  async uploadChunk(id: string, index: number, chunk: Buffer | undefined) {
+    const file = await this.prisma.findByIdOrFail('file', id);
+    if (file.status !== 'UPLOADING') {
+      throw new BadRequestException('Este arquivo não está aguardando upload');
+    }
+    if (!chunk || chunk.length === 0) throw new BadRequestException('Parte do arquivo vazia');
+    if (chunk.length > this.chunkSizeBytes) {
+      throw new BadRequestException(`Parte excede o tamanho de ${this.chunkSizeBytes / (1024 * 1024)} MB`);
+    }
+    const totalChunks = Math.max(1, Math.ceil(Number(file.sizeBytes) / this.chunkSizeBytes));
+    if (!Number.isInteger(index) || index < 0 || index >= totalChunks) {
+      throw new BadRequestException(`Índice de parte inválido (esperado 0..${totalChunks - 1})`);
+    }
+    await this.storage.writeChunk(file.id, index, chunk);
+    return { uploadId: file.id, index, totalChunks };
+  }
+
+  /** Monta as partes, valida o tamanho e segue o fluxo normal de verificação. */
+  async completeChunked(id: string) {
+    const file = await this.prisma.findByIdOrFail('file', id);
+    if (file.status !== 'UPLOADING') {
+      throw new BadRequestException('Este arquivo não está aguardando upload');
+    }
+    const totalChunks = Math.max(1, Math.ceil(Number(file.sizeBytes) / this.chunkSizeBytes));
+    let buffer: Buffer;
+    try {
+      buffer = await this.storage.assembleChunks(file.id, totalChunks);
+    } catch (err) {
+      throw new BadRequestException(`Upload incompleto: ${err}`);
+    }
+    if (buffer.length !== Number(file.sizeBytes)) {
+      throw new BadRequestException(
+        `Tamanho recebido (${buffer.length} bytes) difere do informado (${file.sizeBytes} bytes)`,
+      );
+    }
+    await this.storage.put(file.storageKey, buffer, file.mimeType);
+    await this.storage.removeChunks(file.id);
+    return this.finalizeUpload(file, buffer);
+  }
+
+  async abortChunked(id: string) {
+    const file = await this.prisma.findByIdOrFail('file', id);
+    if (file.status !== 'UPLOADING') {
+      throw new BadRequestException('Este arquivo não está aguardando upload');
+    }
+    await this.storage.removeChunks(file.id);
+    await this.prisma.db.file.delete({ where: { id } });
+    return { ok: true };
   }
 
   async listQuarantined() {
@@ -168,14 +288,15 @@ export class FilesService {
 
   async rescan(id: string) {
     const file = await this.prisma.findByIdOrFail('file', id);
-    const buffer = await this.storage.getBuffer(file.storageKey);
-    const verdict = await this.scanner.scan(buffer, file.name, file.mimeType);
-    const status = verdict.clean ? 'AVAILABLE' : 'QUARANTINED';
-    await this.prisma.db.file.update({
-      where: { id },
-      data: { status, scanResult: verdict.clean ? 'clean' : verdict.reason ?? 'suspeito', scannedAt: new Date() },
+    await this.prisma.db.file.update({ where: { id }, data: { status: 'SCANNING' } });
+    this.scheduleScan({
+      fileId: file.id,
+      storageKey: file.storageKey,
+      name: file.name,
+      mimeType: file.mimeType,
+      uploaderId: file.uploadedBy,
     });
-    return { status, scanResult: verdict.reason ?? 'clean' };
+    return { status: 'SCANNING' as const };
   }
 
   /** Cria um registro e devolve uma URL de upload direto (S3/MinIO). */
@@ -215,22 +336,36 @@ export class FilesService {
       await this.prisma.db.file.delete({ where: { id } });
       throw new BadRequestException(`Arquivo excede o limite de ${MAX_FILE_SIZE_MB} MB`);
     }
-    const verdict = await this.scanner.scan(buffer, file.name, file.mimeType);
+    return this.finalizeUpload(file, buffer);
+  }
+
+  private async finalizeUpload(file: any, buffer: Buffer) {
+    const scanEnabled = process.env.FILE_SCAN_ENABLED !== 'false';
     const checksum = createHash('sha256').update(buffer).digest('hex');
     const updated = await this.prisma.db.file.update({
-      where: { id },
+      where: { id: file.id },
       data: {
         sizeBytes: BigInt(buffer.length),
         checksum,
-        status: verdict.clean ? 'AVAILABLE' : 'QUARANTINED',
-        scanResult: verdict.clean ? 'clean' : verdict.reason ?? 'suspeito',
-        scannedAt: new Date(),
+        status: scanEnabled ? 'SCANNING' : 'AVAILABLE',
+        ...(scanEnabled ? {} : { scanResult: 'verificação desabilitada', scannedAt: new Date() }),
         versions: {
           create: { version: 1, storageKey: file.storageKey, sizeBytes: BigInt(buffer.length), uploadedBy: file.uploadedBy },
         },
       },
     });
-    await this.audit.log({ entityType: 'File', entityId: id, action: 'UPLOAD', after: { name: file.name, status: updated.status } });
+    await this.audit.log({ entityType: 'File', entityId: file.id, action: 'UPLOAD', after: { name: file.name, status: updated.status } });
+
+    if (scanEnabled) {
+      this.scheduleScan({
+        fileId: file.id,
+        storageKey: file.storageKey,
+        name: file.name,
+        mimeType: file.mimeType,
+        uploaderId: file.uploadedBy,
+        buffer,
+      });
+    }
     return this.serialize(updated);
   }
 
@@ -288,6 +423,55 @@ export class FilesService {
     await this.prisma.findByIdOrFail('folder', id);
     await this.prisma.db.folder.update({ where: { id }, data: { deletedAt: new Date() } });
     return { ok: true };
+  }
+
+  /**
+   * Verificação assíncrona: o arquivo fica SCANNING até o veredito, quando o
+   * status vira AVAILABLE ou QUARANTINED e um evento SSE é publicado para o
+   * dono atualizar a interface em tempo real.
+   */
+  private scheduleScan(params: {
+    fileId: string;
+    storageKey: string;
+    name: string;
+    mimeType: string;
+    uploaderId: string;
+    buffer?: Buffer;
+  }) {
+    const { fileId, storageKey, name, mimeType, uploaderId } = params;
+    setImmediate(async () => {
+      try {
+        const buffer = params.buffer ?? (await this.storage.getBuffer(storageKey));
+        const verdict = await this.scanner.scan(buffer, name, mimeType);
+        const status = verdict.clean ? 'AVAILABLE' : 'QUARANTINED';
+        const scanResult = verdict.clean ? 'clean' : verdict.reason ?? 'suspeito';
+        await this.prisma.file.update({
+          where: { id: fileId },
+          data: { status, scanResult, scannedAt: new Date() },
+        });
+        this.bus.publish(EventBusService.channelForUser(uploaderId), {
+          type: 'file.scan',
+          fileId,
+          status,
+          scanResult,
+          fileName: name,
+        });
+      } catch (err) {
+        this.logger.error(`Falha na verificação do arquivo ${fileId}: ${err}`);
+        await this.prisma.file
+          .update({
+            where: { id: fileId },
+            data: { status: 'QUARANTINED', scanResult: 'erro na verificação', scannedAt: new Date() },
+          })
+          .catch(() => undefined);
+        this.bus.publish(EventBusService.channelForUser(uploaderId), {
+          type: 'file.scan',
+          fileId,
+          status: 'QUARANTINED',
+          fileName: name,
+        });
+      }
+    });
   }
 
   private serialize(file: any) {

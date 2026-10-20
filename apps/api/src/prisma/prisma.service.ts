@@ -31,6 +31,13 @@ const TENANT_MODELS = new Set([
   'Notification',
   'CustomField',
   'Label',
+  'AutomationRule',
+  'ConsentRecord',
+  'DataRequest',
+  'ApiKey',
+  'Subscription',
+  'Invoice',
+  'CalendarIntegration',
 ]);
 
 const LIST_OPERATIONS = new Set([
@@ -56,6 +63,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
    *   (a menos que allowUnscoped esteja ativo, usado apenas pelo fluxo de autenticação)
    */
   public readonly db: any;
+  public readonly rlsEnabled = process.env.RLS_ENABLED === 'true';
 
   constructor() {
     super();
@@ -68,6 +76,25 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleDestroy() {
     await this.$disconnect();
+  }
+
+  /**
+   * Executa a requisição dentro de uma transação com `app.tenant_id` definido
+   * localmente (SET LOCAL / set_config), permitindo que as políticas de RLS do
+   * banco (prisma/rls-enforce.sql) filtrem as linhas pelo tenant atual.
+   *
+   * Quando RLS_ENABLED=false apenas executa `fn` sem transação.
+   */
+  async withTenantTransaction<T>(tenantId: string, fn: () => Promise<T>): Promise<T> {
+    if (!this.rlsEnabled) return fn();
+    return this.$transaction(
+      async (tx: any) => {
+        await tx.$executeRawUnsafe(`SELECT set_config('app.tenant_id', $1, true)`, tenantId);
+        const store = TenantContext.get() ?? {};
+        return TenantContext.run({ ...store, tenantId, tx }, fn);
+      },
+      { timeout: 30_000, maxWait: 10_000 },
+    );
   }
 
   /** Busca por id garantindo que o registro pertence ao tenant atual. */
@@ -95,28 +122,33 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
               if (store?.allowUnscoped) {
                 return query(args);
               }
-              throw new ForbiddenException('Operação sem contexto de empresa (tenant)');
+              throw new ForbiddenException(`Operação sem contexto de empresa (tenant): ${model}.${operation}`);
             }
 
             const a = (args ?? {}) as AnyArgs;
 
+            // Com RLS ativo, todas as operações passam pelo cliente de transação
+            // (que já tem `app.tenant_id` definido via set_config local).
+            const exec = (finalArgs: AnyArgs) =>
+              store?.tx ? (store.tx as any)[model][operation](finalArgs) : query(finalArgs);
+
             if (operation === 'create') {
               a.data = { ...a.data, tenantId };
-              return query(a);
+              return exec(a);
             }
 
             if (operation === 'createMany') {
               const data = Array.isArray(a.data) ? a.data : [a.data];
               a.data = data.map((d: AnyArgs) => ({ ...d, tenantId }));
-              return query(a);
+              return exec(a);
             }
 
             if (LIST_OPERATIONS.has(operation)) {
               a.where = { ...(a.where ?? {}), tenantId };
-              return query(a);
+              return exec(a);
             }
 
-            return query(a);
+            return exec(a);
           },
         },
       } as any,

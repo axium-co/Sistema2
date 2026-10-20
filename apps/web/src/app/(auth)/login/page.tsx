@@ -13,15 +13,39 @@ export default function LoginPage() {
   const setSession = useAuth((s) => s.setSession);
   const [loading, setLoading] = useState(false);
   const [form, setForm] = useState({ email: '', password: '' });
+  const [challenge, setChallenge] = useState<{ challengeToken: string; email: string } | null>(null);
+  const [code, setCode] = useState('');
+
+  async function applySession(data: { accessToken: string; refreshToken: string; user: AuthUser; tenant: AuthUser['tenant'] }) {
+    setSession({ ...data, user: { ...data.user, tenant: data.tenant } });
+    toast.success(`Bem-vindo, ${data.user.name.split(' ')[0]}`);
+    router.push('/dashboard');
+  }
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     try {
-      const data = await api.post<{ accessToken: string; refreshToken: string; user: AuthUser; tenant: AuthUser['tenant'] }>('/api/auth/login', form);
-      setSession({ ...data, user: { ...data.user, tenant: data.tenant } });
-      toast.success(`Bem-vindo, ${data.user.name.split(' ')[0]}`);
-      router.push('/dashboard');
+      const data = await api.post<any>('/api/auth/login', form);
+      if (data?.twoFactorRequired) {
+        setChallenge({ challengeToken: data.challengeToken, email: data.email });
+        return;
+      }
+      await applySession(data);
+    } catch (err: any) {
+      toast.error(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function submitCode(e: React.FormEvent) {
+    e.preventDefault();
+    if (!challenge) return;
+    setLoading(true);
+    try {
+      const data = await api.post<any>('/api/auth/2fa/verify', { challengeToken: challenge.challengeToken, code });
+      await applySession(data);
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -56,10 +80,47 @@ export default function LoginPage() {
             <Mark />
             <span className="text-lg font-extrabold tracking-tight">AXIUM</span>
           </div>
-          <p className="text-eyebrow uppercase text-faint">Acessar</p>
-          <h2 className="mt-2 text-2xl font-extrabold tracking-tight">Entrar na plataforma</h2>
-          <p className="mt-1 text-sm text-muted">Use suas credenciais corporativas.</p>
+          <p className="text-eyebrow uppercase text-faint">{challenge ? 'Verificação em duas etapas' : 'Acessar'}</p>
+          <h2 className="mt-2 text-2xl font-extrabold tracking-tight">
+            {challenge ? 'Confirme seu identidade' : 'Entrar na plataforma'}
+          </h2>
+          <p className="mt-1 text-sm text-muted">
+            {challenge
+              ? `Digite o código de 6 dígitos do aplicativo autenticador de ${challenge.email}.`
+              : 'Use suas credenciais corporativas.'}
+          </p>
 
+          {challenge ? (
+            <form onSubmit={submitCode} className="mt-7 space-y-4">
+              <Field label="Código de verificação">
+                <Input
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  required
+                  maxLength={6}
+                  placeholder="000000"
+                  className="text-center text-lg tracking-[0.4em]"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.replace(/\D/g, ''))}
+                  autoFocus
+                />
+              </Field>
+              <Button type="submit" size="lg" className="w-full justify-between" disabled={loading || code.length !== 6}>
+                {loading ? 'Verificando…' : 'Verificar'}
+                <ArrowRight size={16} />
+              </Button>
+              <button
+                type="button"
+                onClick={() => {
+                  setChallenge(null);
+                  setCode('');
+                }}
+                className="w-full text-center text-xs text-muted underline-offset-4 hover:text-fg hover:underline"
+              >
+                Voltar para o login
+              </button>
+            </form>
+          ) : (
           <form onSubmit={submit} className="mt-7 space-y-4">
             <Field label="E-mail">
               <Input
@@ -84,6 +145,7 @@ export default function LoginPage() {
               <ArrowRight size={16} />
             </Button>
           </form>
+          )}
 
           <p className="mt-6 text-center text-xs text-muted">
             Ainda não tem conta?{' '}

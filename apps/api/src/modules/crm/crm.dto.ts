@@ -1,4 +1,5 @@
 import {
+  Allow,
   IsArray,
   IsBoolean,
   IsIn,
@@ -105,4 +106,56 @@ export class NoteDto {
   @IsString() entityType: string;
   @IsString() entityId: string;
   @IsString() @MinLength(1) body: string;
+}
+
+export class ProductDto {
+  @IsString() @MinLength(1) name: string;
+  @IsOptional() @IsNumber() price?: number;
+  @IsOptional() @IsString() sku?: string;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
+export class GoalDto {
+  @IsOptional() @IsString() ownerId?: string;
+  @IsString() @MinLength(1) metric: string;
+  @IsNumber() target: number;
+  @IsString() periodStart: string;
+  @IsString() periodEnd: string;
+}
+
+export class CustomFieldDto {
+  @IsString() @MinLength(1) entityType: string;
+  @IsString() @MinLength(1) label: string;
+  @IsIn(['text', 'number', 'date', 'select', 'boolean']) type: string;
+  @IsOptional() @Allow() options?: unknown;
+  @IsOptional() @IsNumber() position?: number;
+}
+
+export class CustomFieldValueDto {
+  @IsString() customFieldId: string;
+  @IsString() entityId: string;
+  @Allow() value: unknown;
+}
+
+export class UpdateProductDto {
+  @IsOptional() @IsString() @MinLength(1) name?: string;
+  @IsOptional() @IsNumber() price?: number;
+  @IsOptional() @IsString() sku?: string | null;
+  @IsOptional() @IsBoolean() active?: boolean;
+}
+
+export class UpdateGoalDto {
+  @IsOptional() @IsString() ownerId?: string;
+  @IsOptional() @IsString() metric?: string;
+  @IsOptional() @IsNumber() target?: number;
+  @IsOptional() @IsString() periodStart?: string;
+  @IsOptional() @IsString() periodEnd?: string;
+}
+
+export class UpdateCustomFieldDto {
+  @IsOptional() @IsString() entityType?: string;
+  @IsOptional() @IsString() label?: string;
+  @IsOptional() @IsString() type?: string;
+  @IsOptional() @Allow() options?: unknown;
+  @IsOptional() @IsNumber() position?: number;
 }

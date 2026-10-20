@@ -17,6 +17,12 @@ export {
   FOCUS_DEFAULT_MINUTES,
   FOCUS_BREAK_MINUTES,
   FOCUS_MAX_MINUTES,
+  FILE_STATUSES,
+  FILE_STATUS_LABELS,
+  PLANS,
+  planByCode,
+  SUBSCRIPTION_STATUSES,
+  SUBSCRIPTION_STATUS_LABELS,
 } from '@axium/shared';
 
 export type {
@@ -28,6 +34,8 @@ export type {
   Role,
   RoutineFrequency,
   Weekday,
+  PlanCode,
+  SubscriptionStatus,
 } from '@axium/shared';
 
 import {

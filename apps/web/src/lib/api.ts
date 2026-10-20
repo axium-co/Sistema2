@@ -131,6 +131,8 @@ export const api = {
     apiFetch<T>(path, { method: 'POST', body: body instanceof FormData ? body : JSON.stringify(body ?? {}) }),
   patch: <T = any>(path: string, body?: any) =>
     apiFetch<T>(path, { method: 'PATCH', body: JSON.stringify(body ?? {}) }),
+  put: <T = any>(path: string, body?: any) =>
+    apiFetch<T>(path, { method: 'PUT', body: JSON.stringify(body ?? {}) }),
   del: <T = any>(path: string) => apiFetch<T>(path, { method: 'DELETE' }),
 };
 
