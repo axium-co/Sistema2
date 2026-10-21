@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* AXIUM — tema escuro (padrão) */
+    --background: 10 10 10; /* #0A0A0A */
+    --foreground: 255 255 255; /* #FFFFFF */
+    --surface: 17 17 17; /* #111111 */
+    --elevated: 26 26 26; /* #1A1A1A */
+    --muted-fg: 161 161 170; /* #A1A1AA */
+    --faint: 113 113 122; /* #71717A */
+    --border-soft: 255 255 255; /* usada com alfa 0.08 */
+    --border: 30 30 30; /* equivale a rgba(255,255,255,0.08) sobre #0A0A0A */
+    --input: 30 30 30;
+    --ring: 255 255 255;
+    --success: 143 191 159; /* #8FBF9F */
+    --warning: 191 162 124; /* #BFA27C */
+    --danger: 201 139 139; /* #C98B8B */
+    --info: 124 156 191; /* #7C9CBF */
+    --radius: 0.75rem;
+  }
+
+  .light {
+    --background: 250 250 249;
+    --foreground: 17 17 17;
+    --surface: 255 255 255;
+    --elevated: 245 245 244;
+    --muted-fg: 82 82 91;
+    --faint: 113 113 122;
+    --border-soft: 24 24 27;
+    --border: 227 227 227;
+    --input: 227 227 227;
+    --ring: 24 24 27;
+  }
+
+  * {
+    border-color: rgb(var(--border-soft) / 0.08);
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    background: rgb(var(--background));
+    color: rgb(var(--foreground));
+    font-family: var(--font-inter), Inter, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  input,
+  textarea,
+  select {
+    color-scheme: dark;
+  }
+}
+
+.surface-glow {
+  position: relative;
+  overflow: hidden;
+}
+.surface-glow::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 140px;
+  background: radial-gradient(120% 100% at 50% 0%, rgb(255 255 255 / 0.05) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(var(--border-soft) / 0.12);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
