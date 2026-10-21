@@ -2,7 +2,7 @@
 
 import { create } from 'zustand';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3333';
+const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3333').replace(/\/+$/, '');
 
 export interface AuthUser {
   id: string;
@@ -72,18 +72,24 @@ async function refreshAccessToken(): Promise<string | null> {
   const { refreshToken } = useAuth.getState();
   if (!refreshToken) return null;
   if (!refreshing) {
-    refreshing = fetch(`${API_URL}/api/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refreshToken }),
-    })
+    refreshing = request(
+      '/api/auth/refresh',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      },
+      {},
+    )
       .then(async (res) => {
-        if (!res.ok) throw new Error('refresh failed');
+        if (!res.ok) throw new ApiError(`Erro ${res.status}`, res.status);
         const data = await res.json();
         useAuth.getState().setSession(data);
         return data.accessToken as string;
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        // Falha de rede não invalida a sessão: só desloga em recusa do token.
+        if (err instanceof ApiError && err.status === 0) return null;
         useAuth.getState().logout();
         return null;
       })
@@ -92,6 +98,29 @@ async function refreshAccessToken(): Promise<string | null> {
       });
   }
   return refreshing;
+}
+
+/** Erro de API com status HTTP (0 = API inacessível). */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+async function request(
+  path: string,
+  options: RequestInit,
+  headers: Record<string, string>,
+): Promise<Response> {
+  try {
+    return await fetch(`${API_URL}${path}`, { ...options, headers });
+  } catch {
+    throw new ApiError(`API inacessível em ${API_URL} — verifique a URL e a rede.`, 0);
+  }
 }
 
 export async function apiFetch<T = any>(
@@ -105,20 +134,22 @@ export async function apiFetch<T = any>(
   };
   if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
 
-  let res = await fetch(`${API_URL}${path}`, { ...options, headers });
+  let res = await request(path, options, headers);
 
   if (res.status === 401 && accessToken) {
     const newToken = await refreshAccessToken();
     if (newToken) {
       headers.Authorization = `Bearer ${newToken}`;
-      res = await fetch(`${API_URL}${path}`, { ...options, headers });
+      res = await request(path, options, headers);
     }
   }
 
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Erro inesperado' }));
-    const message = Array.isArray(error.message) ? error.message.join(', ') : error.message;
-    throw new Error(message ?? 'Erro inesperado');
+    const error = await res.json().catch(() => null);
+    const message = Array.isArray(error?.message)
+      ? error.message.join(', ')
+      : error?.message;
+    throw new ApiError(message || `Erro ${res.status} (${res.statusText})`, res.status);
   }
 
   if (res.status === 204) return undefined as T;

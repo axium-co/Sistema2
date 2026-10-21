@@ -24,7 +24,18 @@ export interface AuthUser {
   name: string;
 }
 
-export const JWT_SECRET = () => process.env.JWT_SECRET ?? 'dev-jwt-secret-change-me';
+export const JWT_SECRET = () => {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  if (process.env.NODE_ENV === 'production') throw new Error('JWT_SECRET não configurado');
+  return 'dev-jwt-secret-change-me';
+};
+
+/** Segredo dos refresh tokens. Em produção exige JWT_REFRESH_SECRET próprio. */
+export const JWT_REFRESH_SECRET = () => {
+  if (process.env.JWT_REFRESH_SECRET) return process.env.JWT_REFRESH_SECRET;
+  if (process.env.NODE_ENV === 'production') throw new Error('JWT_REFRESH_SECRET não configurado');
+  return JWT_SECRET();
+};
 
 export function signAccessToken(user: AuthUser): string {
   const ttl = process.env.JWT_ACCESS_TTL ?? '15m';

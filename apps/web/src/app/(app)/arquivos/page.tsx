@@ -251,7 +251,7 @@ export default function ArquivosPage() {
                       </div>
                     </td>
                     <td className="px-5 py-3">
-                      <StatusBadge status={f.status} />
+                      <StatusBadge status={trash ? 'DELETED' : f.status} />
                     </td>
                     <td className="px-5 py-3 text-muted">{humanSize(Number(f.sizeBytes))}</td>
                     <td className="px-5 py-3 text-muted">

@@ -3,6 +3,7 @@ import { CrmService } from './crm.service';
 import {
   CompanyDto,
   ContactDto,
+  ConvertLeadDto,
   CustomFieldDto,
   CustomFieldValueDto,
   GoalDto,
@@ -100,7 +101,7 @@ export class CrmController {
 
   @Post('leads/:id/convert')
   @RequirePermission('crm', 'edit')
-  convertLead(@Param('id') id: string, @Body() body: { pipelineId: string; stageId: string; ownerId: string }) {
+  convertLead(@Param('id') id: string, @Body() body: ConvertLeadDto) {
     return this.service.convertLead(id, body);
   }
 

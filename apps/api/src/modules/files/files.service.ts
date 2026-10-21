@@ -1,13 +1,19 @@
-import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditService } from '../../common/audit.service';
 import { EventBusService } from '../../common/event-bus.service';
+import { TenantContext } from '../../common/tenant-context';
 import { StorageService } from './storage.service';
-import { ScannerService } from './scanner.service';
+import { ScannerService, dangerousExtension } from './scanner.service';
 import { paginate } from '../../common/pagination';
 import { MAX_FILE_SIZE_MB } from '@axium/shared';
+
+/** Intervalo da varredura de arquivos travados em SCANNING (5 min). */
+const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+/** Tempo sem atividade antes de considerar a verificação travada (10 min). */
+const STUCK_SCAN_MS = 10 * 60 * 1000;
 
 const ALLOWED_MIME = new Set([
   'image/png',
@@ -34,9 +40,16 @@ function sanitizeName(name: string) {
   return basename(name).replace(/[^\w.\-() ]+/g, '_').slice(0, 180) || 'arquivo';
 }
 
+/** Rejeita nomes com extensão perigosa antes de gravar qualquer coisa. */
+function assertSafeName(name: string) {
+  const dangerous = dangerousExtension(name);
+  if (dangerous) throw new BadRequestException(`Extensão de arquivo não permitida: ${dangerous}`);
+}
+
 @Injectable()
-export class FilesService {
+export class FilesService implements OnModuleInit {
   private readonly logger = new Logger('FilesService');
+  private sweepTimer?: NodeJS.Timeout;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -45,6 +58,48 @@ export class FilesService {
     private readonly scanner: ScannerService,
     private readonly bus: EventBusService,
   ) {}
+
+  /**
+   * A verificação de segurança roda em memória (setImmediate): se a API
+   * reiniciar no meio, o arquivo ficaria travado em SCANNING para sempre.
+   * A varredura abaixo reprocessa esses arquivos.
+   */
+  onModuleInit() {
+    this.sweepTimer = setInterval(() => {
+      void this.sweepStuckScans();
+    }, SWEEP_INTERVAL_MS);
+    this.sweepTimer.unref?.();
+  }
+
+  private async sweepStuckScans() {
+    try {
+      const stale = await this.prisma.file.findMany({
+        where: { status: 'SCANNING', updatedAt: { lt: new Date(Date.now() - STUCK_SCAN_MS) } },
+        take: 20,
+        select: { id: true, storageKey: true, name: true, mimeType: true, uploadedBy: true },
+      });
+      for (const file of stale) {
+        this.logger.warn(`Reprocessando verificação travada do arquivo ${file.id}`);
+        this.scheduleScan({
+          fileId: file.id,
+          storageKey: file.storageKey,
+          name: file.name,
+          mimeType: file.mimeType,
+          uploaderId: file.uploadedBy,
+        });
+      }
+    } catch (err) {
+      this.logger.error(`Falha na varredura de arquivos em SCANNING: ${err}`);
+    }
+  }
+
+  /**
+   * Chave de armazenamento com prefixo da empresa: permite políticas de
+   * lifecycle/bucket por tenant no S3/MinIO e evita colisão entre empresas.
+   */
+  private storageKeyFor(name: string) {
+    return `tenants/${TenantContext.requireTenant()}/${randomUUID()}/${name}`;
+  }
 
   async list(query: { search?: string; folderId?: string; trashed?: string; page?: number; pageSize?: number }) {
     const { skip, take, page, pageSize } = paginate(query);
@@ -92,7 +147,8 @@ export class FilesService {
     }
 
     const name = sanitizeName(file.originalname);
-    const storageKey = `${randomUUID()}/${name}`;
+    assertSafeName(name);
+    const storageKey = this.storageKeyFor(name);
     await this.storage.put(storageKey, file.buffer, file.mimetype);
 
     const scanEnabled = process.env.FILE_SCAN_ENABLED !== 'false';
@@ -145,6 +201,9 @@ export class FilesService {
 
   async content(id: string) {
     const file = await this.prisma.findByIdOrFail('file', id);
+    if (file.deletedAt) {
+      throw new ForbiddenException('Arquivo na lixeira: restaure para acessá-lo');
+    }
     if (file.status !== 'AVAILABLE') {
       throw new ForbiddenException('Arquivo indisponível: aguardando verificação de segurança');
     }
@@ -193,7 +252,8 @@ export class FilesService {
     }
 
     const name = sanitizeName(params.name);
-    const storageKey = `${randomUUID()}/${name}`;
+    assertSafeName(name);
+    const storageKey = this.storageKeyFor(name);
     const chunkSize = this.chunkSizeBytes;
     const totalChunks = Math.max(1, Math.ceil(params.size / chunkSize));
 
@@ -308,7 +368,8 @@ export class FilesService {
       throw new BadRequestException(`Tipo de arquivo não permitido: ${params.mimeType}`);
     }
     const name = sanitizeName(params.name);
-    const storageKey = `${randomUUID()}/${name}`;
+    assertSafeName(name);
+    const storageKey = this.storageKeyFor(name);
     const file = await this.prisma.db.file.create({
       data: {
         folderId: params.folderId ?? null,
@@ -386,15 +447,30 @@ export class FilesService {
 
   async trash(id: string) {
     await this.prisma.findByIdOrFail('file', id);
-    await this.prisma.db.file.update({ where: { id }, data: { deletedAt: new Date(), status: 'DELETED' } });
+    // O status é preservado de propósito: um arquivo em QUARANTINED continua
+    // bloqueado depois de restaurado (só `release` libera). O download é
+    // bloqueado por `deletedAt` (ver content()).
+    await this.prisma.db.file.update({ where: { id }, data: { deletedAt: new Date() } });
     await this.audit.log({ entityType: 'File', entityId: id, action: 'TRASH' });
     return { ok: true };
   }
 
   async restore(id: string) {
-    await this.prisma.findByIdOrFail('file', id);
-    await this.prisma.db.file.update({ where: { id }, data: { deletedAt: null, status: 'AVAILABLE' } });
-    return { ok: true };
+    const file = await this.prisma.findByIdOrFail('file', id);
+    await this.prisma.db.file.update({ where: { id }, data: { deletedAt: null } });
+    // Verificação em andamento (ou interrompida) é retomada; quarentena e
+    // arquivo disponível mantêm o status original.
+    if (file.status === 'SCANNING') {
+      this.scheduleScan({
+        fileId: file.id,
+        storageKey: file.storageKey,
+        name: file.name,
+        mimeType: file.mimeType,
+        uploaderId: file.uploadedBy,
+      });
+    }
+    await this.audit.log({ entityType: 'File', entityId: id, action: 'RESTORE' });
+    return { ok: true, status: file.status };
   }
 
   async purge(id: string) {

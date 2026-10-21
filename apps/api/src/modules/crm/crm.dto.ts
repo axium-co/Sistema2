@@ -159,3 +159,9 @@ export class UpdateCustomFieldDto {
   @IsOptional() @Allow() options?: unknown;
   @IsOptional() @IsNumber() position?: number;
 }
+
+export class ConvertLeadDto {
+  @IsString() @MinLength(1) pipelineId: string;
+  @IsString() @MinLength(1) stageId: string;
+  @IsString() @MinLength(1) ownerId: string;
+}

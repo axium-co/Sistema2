@@ -12,6 +12,18 @@ const DANGEROUS_EXTENSIONS = new Set([
   '.msi', '.msp', '.dll', '.jar', '.app', '.sh', '.bin', '.gadget',
 ]);
 
+/** Retorna a extensão perigosa encontrada no nome (final ou intermediária) ou null. */
+export function dangerousExtension(name: string): string | null {
+  const parts = name.toLowerCase().split('.');
+  if (parts.length >= 2 && DANGEROUS_EXTENSIONS.has(`.${parts[parts.length - 1]}`)) {
+    return `.${parts[parts.length - 1]}`;
+  }
+  for (let i = 1; i < parts.length - 1; i++) {
+    if (DANGEROUS_EXTENSIONS.has(`.${parts[i]}`)) return `.${parts[i]}`;
+  }
+  return null;
+}
+
 /**
  * Verificação de arquivos enviados.
  *
@@ -113,17 +125,13 @@ export class ScannerService {
   }
 
   private inspect(buffer: Buffer, name: string, mimeType: string): ScanVerdict {
+    const dangerous = dangerousExtension(name);
+    if (dangerous) {
+      return { clean: false, reason: `Extensão de arquivo não permitida: ${dangerous}` };
+    }
+
     const lower = name.toLowerCase();
     const parts = lower.split('.');
-
-    if (parts.length >= 2 && DANGEROUS_EXTENSIONS.has(`.${parts[parts.length - 1]}`)) {
-      return { clean: false, reason: `Extensão de arquivo não permitida: .${parts[parts.length - 1]}` };
-    }
-    for (let i = 1; i < parts.length - 1; i++) {
-      if (DANGEROUS_EXTENSIONS.has(`.${parts[i]}`)) {
-        return { clean: false, reason: `Extensão dupla suspeita (.${parts[i]} seguido de ${parts[parts.length - 1]})` };
-      }
-    }
 
     const sig = (bytes: number[]) =>
       buffer.length >= bytes.length && bytes.every((b, i) => buffer[i] === b);

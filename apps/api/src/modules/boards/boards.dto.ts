@@ -64,3 +64,11 @@ export class CommentDto {
   @IsString() @MinLength(1) body: string;
   @IsOptional() @IsArray() mentions?: string[];
 }
+
+export class AssignCardDto {
+  @IsString() @MinLength(1) userId: string;
+}
+
+export class AddCardLabelDto {
+  @IsString() @MinLength(1) labelId: string;
+}

@@ -17,9 +17,13 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import type { Request, Response } from 'express';
 import * as jwt from 'jsonwebtoken';
 import { FilesService } from './files.service';
+import { CreateFolderDto, InitChunkedUploadDto, LinkFileDto, PresignDto, UploadDto } from './files.dto';
 import { Public, RequirePermission, JWT_SECRET, type AuthUser } from '../../common/auth';
 import { CurrentUser } from '../../common/current-user.decorator';
 import { TenantContext } from '../../common/tenant-context';
+import { MAX_FILE_SIZE_MB } from '@axium/shared';
+
+const MAX_FILE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
 @Controller('files')
 export class FilesController {
@@ -51,7 +55,7 @@ export class FilesController {
 
   @Post('presign')
   @RequirePermission('arquivos', 'create')
-  presign(@Body() body: { name: string; mimeType: string; folderId?: string }, @CurrentUser() user: AuthUser) {
+  presign(@Body() body: PresignDto, @CurrentUser() user: AuthUser) {
     return this.service.presign({ ...body, userId: user.userId });
   }
 
@@ -75,7 +79,7 @@ export class FilesController {
 
   @Post('folders')
   @RequirePermission('arquivos', 'create')
-  createFolder(@Body() body: { name: string; parentId?: string }, @CurrentUser() user: AuthUser) {
+  createFolder(@Body() body: CreateFolderDto, @CurrentUser() user: AuthUser) {
     return this.service.createFolder(body.name, body.parentId, user.userId);
   }
 
@@ -93,11 +97,11 @@ export class FilesController {
 
   @Post('upload')
   @RequirePermission('arquivos', 'create')
-  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 100 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_FILE_BYTES } }))
   upload(
     @UploadedFile() file: any,
     @CurrentUser() user: AuthUser,
-    @Body() body: { folderId?: string; entityType?: string; entityId?: string },
+    @Body() body: UploadDto,
   ) {
     return this.service.upload({ file, userId: user.userId, ...body });
   }
@@ -105,15 +109,7 @@ export class FilesController {
   @Post('uploads/init')
   @RequirePermission('arquivos', 'create')
   initChunked(
-    @Body()
-    body: {
-      name: string;
-      mimeType: string;
-      size: number;
-      folderId?: string;
-      entityType?: string;
-      entityId?: string;
-    },
+    @Body() body: InitChunkedUploadDto,
     @CurrentUser() user: AuthUser,
   ) {
     return this.service.initChunkedUpload({ ...body, userId: user.userId });
@@ -121,7 +117,7 @@ export class FilesController {
 
   @Post('uploads/:id/chunks/:index')
   @RequirePermission('arquivos', 'create')
-  @UseInterceptors(FileInterceptor('chunk', { limits: { fileSize: 100 * 1024 * 1024 } }))
+  @UseInterceptors(FileInterceptor('chunk', { limits: { fileSize: MAX_FILE_BYTES } }))
   uploadChunk(
     @Param('id') id: string,
     @Param('index') index: string,
@@ -144,7 +140,7 @@ export class FilesController {
 
   @Post(':id/link')
   @RequirePermission('arquivos', 'edit')
-  link(@Param('id') id: string, @Body() body: { entityType: string; entityId: string }) {
+  link(@Param('id') id: string, @Body() body: LinkFileDto) {
     return this.service.link(id, body.entityType, body.entityId);
   }
 

@@ -3,6 +3,19 @@ import { hashPassword } from '../common/password';
 
 const prisma = new PrismaClient();
 
+const isProduction = process.env.NODE_ENV === 'production';
+
+/**
+ * Credenciais do usuário dono criado pelo seed.
+ * - Em desenvolvimento usa os valores de demonstração.
+ * - Em produção exige SEED_ADMIN_EMAIL/SEED_ADMIN_PASSWORD (nunca um valor fixo).
+ */
+const adminEmail = process.env.SEED_ADMIN_EMAIL ?? 'ana@nexo.com.br';
+const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? 'axium123';
+const adminName = process.env.SEED_ADMIN_NAME ?? 'Ana Ribeiro';
+const tenantName = process.env.SEED_TENANT_NAME ?? 'Nexo Soluções Comerciais';
+const tenantSlug = process.env.SEED_TENANT_SLUG ?? 'nexo';
+
 function daysFromNow(days: number, hour = 9, minute = 0) {
   const d = new Date();
   d.setDate(d.getDate() + days);
@@ -11,6 +24,19 @@ function daysFromNow(days: number, hour = 9, minute = 0) {
 }
 
 async function main() {
+  if (isProduction) {
+    if (!process.env.SEED_ADMIN_EMAIL || !process.env.SEED_ADMIN_PASSWORD) {
+      throw new Error(
+        'Em produção o seed exige SEED_ADMIN_EMAIL e SEED_ADMIN_PASSWORD (o seed cria um usuário OWNER).',
+      );
+    }
+    if (process.env.SEED_ALLOW_TRUNCATE !== 'true') {
+      throw new Error(
+        'O seed APAGA todos os dados do banco (TRUNCATE). Em produção defina SEED_ALLOW_TRUNCATE=true para confirmar.',
+      );
+    }
+  }
+
   console.log('Limpando dados existentes...');
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
@@ -19,23 +45,24 @@ async function main() {
       habit_logs, habits, routine_item_checks, routine_runs, routine_items, routines,
       event_attendees, events, calendars,
       custom_field_values, custom_fields, goals, taggables, tags, notes, activities, deal_stage_history, deal_items, deals, pipeline_stages, pipelines, leads, contacts, companies, products,
+      automation_rules, consent_records, data_requests, api_keys, subscriptions, invoices, calendar_integrations,
       audit_logs, sessions, users, teams, tenants
     RESTART IDENTITY CASCADE;
   `);
 
   console.log('Criando empresa (tenant)...');
   const tenant = await prisma.tenant.create({
-    data: { name: 'Nexo Soluções Comerciais', slug: 'nexo', planCode: 'pro' },
+    data: { name: tenantName, slug: tenantSlug, planCode: 'pro' },
   });
 
-  const passwordHash = await hashPassword('axium123');
+  const passwordHash = await hashPassword(adminPassword);
 
   const ana = await prisma.user.create({
     data: {
       tenantId: tenant.id,
-      email: 'ana@nexo.com.br',
+      email: adminEmail,
       passwordHash,
-      name: 'Ana Ribeiro',
+      name: adminName,
       role: 'OWNER',
       phone: '(11) 98876-1200',
     },
@@ -365,7 +392,7 @@ async function main() {
 
   console.log('\nSeed concluído com sucesso.');
   console.log('Login de demonstração:');
-  console.log('  Proprietária: ana@nexo.com.br / axium123');
+  console.log(`  Proprietária: ${adminEmail} / ${isProduction ? '(senha definida em SEED_ADMIN_PASSWORD)' : 'axium123'}`);
   console.log('  Gerente:      bruno@nexo.com.br / axium123');
   console.log('  Vendedora:    carla@nexo.com.br / axium123');
   console.log(`  Rotina criada: ${routine.name}`);

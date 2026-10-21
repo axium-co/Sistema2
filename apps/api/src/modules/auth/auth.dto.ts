@@ -96,3 +96,9 @@ export class AcceptInvitationDto {
   @MinLength(8)
   password: string;
 }
+
+export class LogoutDto {
+  @IsOptional()
+  @IsString()
+  refreshToken?: string;
+}

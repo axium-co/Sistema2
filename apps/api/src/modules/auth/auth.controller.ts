@@ -1,10 +1,12 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Req } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { AuthService } from './auth.service';
 import { TwoFactorService } from './two-factor.service';
 import {
   ChangePasswordDto,
   LoginDto,
+  LogoutDto,
   RefreshDto,
   RegisterDto,
   TwoFactorCodeDto,
@@ -16,6 +18,7 @@ import { CurrentUser } from '../../common/current-user.decorator';
 import { Public, type AuthUser } from '../../common/auth';
 
 @Controller('auth')
+@Throttle({ default: { limit: 60, ttl: 60_000 } })
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
@@ -27,6 +30,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('register')
   register(@Body() dto: RegisterDto, @Req() req: Request) {
     const { device, ip } = this.meta(req);
@@ -34,6 +38,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('login')
   login(@Body() dto: LoginDto, @Req() req: Request) {
     const { device, ip } = this.meta(req);
@@ -41,6 +46,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   @Post('refresh')
   refresh(@Body() dto: RefreshDto, @Req() req: Request) {
     const { device, ip } = this.meta(req);
@@ -48,7 +54,7 @@ export class AuthController {
   }
 
   @Post('logout')
-  logout(@CurrentUser() user: AuthUser, @Body() body: { refreshToken?: string }) {
+  logout(@CurrentUser() user: AuthUser, @Body() body: LogoutDto) {
     return this.auth.logout(user.userId, body?.refreshToken);
   }
 
@@ -68,6 +74,7 @@ export class AuthController {
   }
 
   @Public()
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   @Post('2fa/verify')
   verifyTwoFactor(@Body() dto: TwoFactorVerifyDto, @Req() req: Request) {
     const { device, ip } = this.meta(req);

@@ -3,16 +3,19 @@ import { createReadStream, existsSync, mkdirSync, promises as fs } from 'node:fs
 import { join, resolve } from 'node:path';
 import {
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Readable } from 'node:stream';
+import { storageDriver } from '../../config/env';
 
 @Injectable()
 export class StorageService {
-  private readonly driver = process.env.STORAGE_DRIVER ?? 'local';
+  private readonly driver = storageDriver();
   private readonly uploadDir = resolve(process.env.UPLOAD_DIR ?? './uploads');
   private s3?: S3Client;
 
@@ -76,17 +79,41 @@ export class StorageService {
     return join(this.uploadDir, '.chunks');
   }
 
+  /**
+   * Partes do upload resumível. Com driver `s3`, as partes vão para o próprio
+   * bucket (prefixo `.chunks/`) para não depender de disco local — servidores
+   * como Railway/Render têm disco efêmero. Com driver `local`, usam `UPLOAD_DIR`.
+   */
   async writeChunk(uploadId: string, index: number, data: Buffer): Promise<void> {
+    if (this.driver === 's3') {
+      await this.getS3().send(
+        new PutObjectCommand({
+          Bucket: process.env.S3_BUCKET,
+          Key: `${this.chunkS3Prefix(uploadId)}/${index}.part`,
+          Body: data,
+        }),
+      );
+      return;
+    }
     const dir = join(this.chunkRoot, uploadId);
     mkdirSync(dir, { recursive: true });
     await fs.writeFile(join(dir, `${index}.part`), data);
   }
 
   async assembleChunks(uploadId: string, count: number): Promise<Buffer> {
-    const dir = join(this.chunkRoot, uploadId);
     const parts: Buffer[] = [];
     for (let index = 0; index < count; index++) {
-      const part = join(dir, `${index}.part`);
+      if (this.driver === 's3') {
+        const result = await this.getS3().send(
+          new GetObjectCommand({
+            Bucket: process.env.S3_BUCKET,
+            Key: `${this.chunkS3Prefix(uploadId)}/${index}.part`,
+          }),
+        );
+        parts.push(Buffer.from(await result.Body!.transformToByteArray()));
+        continue;
+      }
+      const part = join(this.chunkRoot, uploadId, `${index}.part`);
       if (!existsSync(part)) throw new Error(`Parte ${index} do upload não encontrada`);
       parts.push(await fs.readFile(part));
     }
@@ -94,7 +121,31 @@ export class StorageService {
   }
 
   async removeChunks(uploadId: string): Promise<void> {
+    if (this.driver === 's3') {
+      const prefix = `${this.chunkS3Prefix(uploadId)}/`;
+      let token: string | undefined;
+      do {
+        const listed = await this.getS3().send(
+          new ListObjectsV2Command({ Bucket: process.env.S3_BUCKET, Prefix: prefix, ContinuationToken: token }),
+        );
+        const keys = (listed.Contents ?? []).map((o) => o.Key!).filter(Boolean);
+        if (keys.length) {
+          await this.getS3().send(
+            new DeleteObjectsCommand({
+              Bucket: process.env.S3_BUCKET,
+              Delete: { Objects: keys.map((Key) => ({ Key })), Quiet: true },
+            }),
+          );
+        }
+        token = listed.IsTruncated ? listed.NextContinuationToken : undefined;
+      } while (token);
+      return;
+    }
     await fs.rm(join(this.chunkRoot, uploadId), { recursive: true, force: true });
+  }
+
+  private chunkS3Prefix(uploadId: string) {
+    return `.chunks/${uploadId}`;
   }
 
   async delete(key: string): Promise<void> {

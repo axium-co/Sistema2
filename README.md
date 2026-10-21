@@ -80,6 +80,13 @@ npm run dev:web     # http://localhost:3000
 
 ---
 
+## Deploy (produção)
+
+API em servidor sempre ativo (Railway/Render/VPS) + front na Vercel: instruções
+completas, variáveis de ambiente, Dockerfile e checklist em **[DEPLOY.md](./DEPLOY.md)**.
+
+---
+
 ## Contas de demonstração
 
 Tenant **Nexo Soluções Comerciais** (slug `nexo`) — senha de todas: `axium123`

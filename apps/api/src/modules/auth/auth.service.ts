@@ -5,7 +5,7 @@ import { hashPassword, verifyPassword, passwordHasher } from '../../common/passw
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContext } from '../../common/tenant-context';
 import { AuditService } from '../../common/audit.service';
-import { signAccessToken, JWT_SECRET, type AuthUser } from '../../common/auth';
+import { signAccessToken, JWT_SECRET, JWT_REFRESH_SECRET, type AuthUser } from '../../common/auth';
 import { TwoFactorService } from './two-factor.service';
 import type { Role } from '@axium/shared';
 
@@ -41,7 +41,7 @@ export class AuthService {
 
   private signRefreshToken(sessionId: string) {
     const days = Number(process.env.JWT_REFRESH_TTL_DAYS ?? 30);
-    return jwt.sign({ sid: sessionId, type: 'refresh' }, JWT_SECRET(), { expiresIn: `${days}d` } as jwt.SignOptions);
+    return jwt.sign({ sid: sessionId, type: 'refresh' }, JWT_REFRESH_SECRET(), { expiresIn: `${days}d` } as jwt.SignOptions);
   }
 
   private async createSession(user: AuthUser, device?: string, ip?: string) {
@@ -249,7 +249,7 @@ export class AuthService {
   async refresh(refreshToken: string, device?: string, ip?: string) {
     let payload: { sid: string; type: string };
     try {
-      payload = jwt.verify(refreshToken, JWT_SECRET()) as { sid: string; type: string };
+      payload = jwt.verify(refreshToken, JWT_REFRESH_SECRET()) as { sid: string; type: string };
     } catch {
       throw new UnauthorizedException('Refresh token inválido');
     }
@@ -283,7 +283,7 @@ export class AuthService {
   async logout(userId: string, refreshToken?: string) {
     if (refreshToken) {
       try {
-        const payload = jwt.verify(refreshToken, JWT_SECRET()) as { sid: string };
+        const payload = jwt.verify(refreshToken, JWT_REFRESH_SECRET()) as { sid: string };
         await this.prisma.session.updateMany({
           where: { id: payload.sid, userId },
           data: { revokedAt: new Date() },

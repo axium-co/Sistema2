@@ -1,6 +1,8 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { BoardsService } from './boards.service';
 import {
+  AddCardLabelDto,
+  AssignCardDto,
   BoardDto,
   CardDto,
   ChecklistDto,
@@ -63,7 +65,7 @@ export class BoardsController {
 
   @Post('cards/:id/assignees')
   @RequirePermission('tarefas', 'edit')
-  assign(@Param('id') id: string, @Body() body: { userId: string }) {
+  assign(@Param('id') id: string, @Body() body: AssignCardDto) {
     return this.service.assign(id, body.userId);
   }
 
@@ -75,7 +77,7 @@ export class BoardsController {
 
   @Post('cards/:id/labels')
   @RequirePermission('tarefas', 'edit')
-  addLabel(@Param('id') id: string, @Body() body: { labelId: string }) {
+  addLabel(@Param('id') id: string, @Body() body: AddCardLabelDto) {
     return this.service.addLabel(id, body.labelId);
   }
 

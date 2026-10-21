@@ -13,13 +13,26 @@
     "dev:web": "npm run dev -w @axium/web",
     "build": "npm run build -w @axium/shared && npm run build -w @axium/api && npm run build -w @axium/web",
     "lint": "npm run lint -w @axium/api && npm run lint -w @axium/web",
-    "test": "npm run test -w @axium/api",
+    "test": "npm run test -w @axium/api && npm run test -w @axium/web",
+    "verify": "npm run lint && npm run test && npm run build",
+    "smoke": "npm run smoke -w @axium/api",
+    "db:generate": "npm run db:generate -w @axium/api",
+    "db:deploy": "npm run db:deploy -w @axium/api",
     "db:migrate": "npm run db:migrate -w @axium/api",
     "db:seed": "npm run db:seed -w @axium/api",
     "infra:up": "docker compose up -d",
-    "infra:down": "docker compose down"
+    "infra:down": "docker compose down",
+    "infra:up:s3": "docker compose --profile s3 up -d",
+    "infra:up:full": "docker compose --profile s3 --profile antivirus up -d"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "overrides": {
+    "multer": "2.4.0"
+  },
+  "comments": {
+    "overrides": "multer 2.4.0 corrige o 2.0.2 fixado por @nestjs/platform-express 10.x (CVE). O lockfile ja fixa multer 2.4.0, entao `npm ci` instala a versao corrigida em npm >=10 (verificado com npm 10.9 e 11.12)."
   }
 }
