@@ -50,6 +50,9 @@ jobs:
           npm run db:generate -w @axium/api
           npm run db:deploy -w @axium/api
 
+      - name: Build shared
+        run: npm run build -w @axium/shared
+
       - name: Lint (typecheck)
         run: npm run lint
 
