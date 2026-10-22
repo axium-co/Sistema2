@@ -1,6 +1,69 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* nomes shadcn (mapeados na paleta AXIUM) */
+  --color-background: rgb(var(--background));
+  --color-foreground: rgb(var(--foreground));
+  --color-card: rgb(var(--elevated));
+  --color-card-foreground: rgb(var(--foreground));
+  --color-popover: rgb(var(--elevated));
+  --color-popover-foreground: rgb(var(--foreground));
+  --color-primary: rgb(var(--elevated));
+  --color-primary-foreground: rgb(var(--foreground));
+  --color-secondary: rgb(var(--surface));
+  --color-secondary-foreground: rgb(var(--foreground));
+  --color-muted: rgb(var(--surface));
+  --color-muted-foreground: rgb(var(--muted-fg));
+  --color-accent: rgb(var(--elevated));
+  --color-accent-foreground: rgb(var(--foreground));
+  --color-destructive: rgb(var(--danger));
+  --color-destructive-foreground: rgb(var(--background));
+  --color-border: rgb(var(--border));
+  --color-input: rgb(var(--input));
+  --color-ring: rgb(var(--ring));
+
+  /* nomes AXIUM */
+  --color-bg: rgb(var(--background));
+  --color-surface: rgb(var(--surface));
+  --color-elevated: rgb(var(--elevated));
+  --color-fg: rgb(var(--foreground));
+  --color-faint: rgb(var(--faint));
+  --color-success: rgb(var(--success));
+  --color-warning: rgb(var(--warning));
+  --color-danger: rgb(var(--danger));
+  --color-info: rgb(var(--info));
+
+  --font-sans: var(--font-inter), Inter, system-ui, sans-serif;
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-xl: 0.75rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.5rem;
+
+  --text-eyebrow: 0.6875rem;
+  --text-eyebrow--letter-spacing: 0.12em;
+  --text-eyebrow--font-weight: 500;
+
+  --shadow-card: 0 1px 0 0 rgb(255 255 255 / 0.04) inset;
+  --shadow-drag: 0 12px 30px -12px rgb(0 0 0 / 0.6);
+
+  --animate-fade-in: fade-in 180ms ease-out;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(2px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
 
 @layer base {
   :root {
