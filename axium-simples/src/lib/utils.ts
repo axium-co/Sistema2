@@ -45,3 +45,21 @@ export function toDateInput(value: string | Date | null | undefined) {
   const off = d.getTimezoneOffset();
   return new Date(d.getTime() - off * 60000).toISOString().slice(0, 16);
 }
+
+export function dateKey(value: string | Date | null | undefined) {
+  if (!value) return '';
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const off = d.getTimezoneOffset();
+  return new Date(d.getTime() - off * 60000).toISOString().slice(0, 10);
+}
+
+export function googleMapsUrl(query: string | null | undefined) {
+  if (!query?.trim()) return null;
+  return `https://maps.google.com/?q=${encodeURIComponent(query.trim())}`;
+}
+
+export function googleMapsDirectionsUrl(query: string | null | undefined) {
+  if (!query?.trim()) return null;
+  return `https://maps.google.com/maps?daddr=${encodeURIComponent(query.trim())}`;
+}

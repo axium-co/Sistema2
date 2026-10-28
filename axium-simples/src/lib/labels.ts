@@ -80,5 +80,31 @@ export const ROUTINE_FREQUENCY_LABELS: Record<RoutineFrequency, string> = {
   CUSTOM: 'Personalizada',
 };
 
+export const FINANCE_KINDS = ['RECEITA', 'DESPESA'] as const;
+export type FinanceKind = (typeof FINANCE_KINDS)[number];
+
+export const FINANCE_KIND_LABELS: Record<FinanceKind, string> = {
+  RECEITA: 'Receita',
+  DESPESA: 'Despesa',
+};
+
+export const FINANCE_KIND_COLORS: Record<FinanceKind, string> = {
+  RECEITA: '#8FBF9F',
+  DESPESA: '#C98B8B',
+};
+
+export const FINANCE_STATUSES = ['PENDENTE', 'PAGO'] as const;
+export type FinanceStatus = (typeof FINANCE_STATUSES)[number];
+
+export const FINANCE_STATUS_LABELS: Record<FinanceStatus, string> = {
+  PENDENTE: 'Pendente',
+  PAGO: 'Pago',
+};
+
+export const FINANCE_STATUS_COLORS: Record<FinanceStatus, string> = {
+  PENDENTE: '#BFA27C',
+  PAGO: '#8FBF9F',
+};
+
 /** Limite de upload (MB). */
 export const MAX_FILE_SIZE_MB = 25;

@@ -10,6 +10,7 @@ import {
   Settings,
   SquareKanban,
   Users,
+  Wallet,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Logo } from './logo';
@@ -21,6 +22,7 @@ const nav = [
   { href: '/rotina', label: 'Rotina', icon: ListChecks },
   { href: '/tarefas', label: 'Tarefas', icon: SquareKanban },
   { href: '/arquivos', label: 'Arquivos', icon: FolderOpen },
+  { href: '/financeiro', label: 'Financeiro', icon: Wallet },
 ];
 
 export function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
